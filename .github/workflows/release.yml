@@ -1,0 +1,253 @@
+# Publishes a MyDegreePlan release that students' installs pick up through the in-app
+# Update button. Run it by hand: Actions → Release → Run workflow.
+#
+# What a release is:
+#   * four multi-arch images in GHCR (web, setup, db, updater), each pinned by digest
+#   * docker-compose.yml with those digests (generated from the repo's dev compose file)
+#   * release.json (version, notes, hash of that compose file), signed with the release key
+#   * a fresh-install zip for new students
+#
+# Nothing is published until every check below has passed. Secrets needed (repo or the
+# "release" environment): MDP_SIGNING_KEY (see release-tools/keygen.mjs). If the
+# Frontend/Prototype repos are private: SOURCES_TOKEN, a read-only token for both.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 1.2.0 (no leading "v")'
+        required: true
+      notes:
+        description: 'What changed — students read this in the update prompt'
+        required: true
+      required:
+        description: 'Block older installs until they update (urgent fixes only)'
+        type: boolean
+        default: false
+      frontend_ref:
+        description: 'MyDegreePlan_Frontend branch/tag/SHA to build'
+        default: main
+      prototype_ref:
+        description: 'MyDegreePlan_Prototype branch/tag/SHA to build'
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Layout the Dockerfiles expect: three sibling folders under one build context.
+  MDP: ${{ github.workspace }}/mdp
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: mdp/local-deploy }
+      - uses: actions/checkout@v4
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Frontend
+          ref: ${{ inputs.frontend_ref }}
+          token: ${{ secrets.SOURCES_TOKEN || github.token }}
+          path: mdp/MyDegreePlan_Frontend
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Frontend tests
+        working-directory: mdp/MyDegreePlan_Frontend
+        run: npm ci && npm test
+      - name: Updater tests
+        working-directory: mdp/local-deploy/updater
+        run: npm test
+      - name: Release tooling tests
+        working-directory: mdp/local-deploy/release-tools
+        run: npm ci && npm test
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    # Gate: configure "release" with required reviewers so a second click approves shipping
+    # to every student, and keep MDP_SIGNING_KEY as a secret of this environment only.
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Check inputs
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]] || { echo "::error::version must look like 1.2.3"; exit 1; }
+          echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with: { path: mdp/local-deploy }
+      - uses: actions/checkout@v4
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Frontend
+          ref: ${{ inputs.frontend_ref }}
+          token: ${{ secrets.SOURCES_TOKEN || github.token }}
+          path: mdp/MyDegreePlan_Frontend
+      - uses: actions/checkout@v4
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Prototype
+          ref: ${{ inputs.prototype_ref }}
+          token: ${{ secrets.SOURCES_TOKEN || github.token }}
+          path: mdp/MyDegreePlan_Prototype
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Preflight
+        working-directory: mdp/local-deploy
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f updater/release-signing.pub.pem || { echo "::error::updater/release-signing.pub.pem is missing. Run release-tools/keygen.mjs and commit the public key first."; exit 1; }
+          if gh release view "v$VERSION" >/dev/null 2>&1; then echo "::error::v$VERSION already exists; releases are immutable"; exit 1; fi
+          (cd release-tools && npm ci)
+          # Exactly which source went into this release, recorded inside the signed manifest.
+          jq -n \
+            --arg deploy "$GITHUB_SHA" \
+            --arg frontend "$(git -C ../MyDegreePlan_Frontend rev-parse HEAD)" \
+            --arg prototype "$(git -C ../MyDegreePlan_Prototype rev-parse HEAD)" \
+            '{deploy:$deploy, frontend:$frontend, prototype:$prototype}' > "$RUNNER_TEMP/sources.json"
+          cat "$RUNNER_TEMP/sources.json"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Students on Apple-silicon Macs need arm64; the JS build stage always runs natively.
+      - name: Build web
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: mdp
+          file: mdp/local-deploy/web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ env.OWNER }}/mdp-web:${{ inputs.version }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+      - name: Build setup
+        id: setup
+        uses: docker/build-push-action@v6
+        with:
+          context: mdp
+          file: mdp/local-deploy/setup/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ env.OWNER }}/mdp-setup:${{ inputs.version }}
+          cache-from: type=gha,scope=setup
+          cache-to: type=gha,scope=setup,mode=max
+      - name: Build db
+        id: db
+        uses: docker/build-push-action@v6
+        with:
+          context: mdp/local-deploy/db
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ env.OWNER }}/mdp-db:${{ inputs.version }}
+      - name: Build updater
+        id: updater
+        uses: docker/build-push-action@v6
+        with:
+          context: mdp/local-deploy/updater
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ env.OWNER }}/mdp-updater:${{ inputs.version }}
+
+      # Students pull anonymously. A package that is still private would make every
+      # update fail on their side, so refuse to publish until it is public.
+      - name: Packages must be publicly pullable
+        run: |
+          for pair in "web=${{ steps.web.outputs.digest }}" "setup=${{ steps.setup.outputs.digest }}" "db=${{ steps.db.outputs.digest }}" "updater=${{ steps.updater.outputs.digest }}"; do
+            name="${pair%%=*}"; digest="${pair#*=}"
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${OWNER}/mdp-${name}:pull" | jq -r .token)
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json' "https://ghcr.io/v2/${OWNER}/mdp-${name}/manifests/${digest}")
+            if [ "$code" != 200 ]; then
+              echo "::error::ghcr.io/${OWNER}/mdp-${name} is not public (HTTP $code). GitHub → the org's Packages → mdp-${name} → Package settings → Change visibility → Public. Then re-run."
+              exit 1
+            fi
+          done
+
+      - name: Assemble and sign the release
+        working-directory: mdp/local-deploy
+        env:
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+          REQUIRED: ${{ inputs.required }}
+          MDP_SIGNING_KEY: ${{ secrets.MDP_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$MDP_SIGNING_KEY" || { echo "::error::secret MDP_SIGNING_KEY is not set"; exit 1; }
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.txt"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+
+          # Carry a previous "required" forward so an optional release cannot lift it.
+          PREV_MIN=$(curl -fsSL "$BASE/release.json" 2>/dev/null | jq -r '.min_sequence // 0' 2>/dev/null || echo 0)
+          [[ "$PREV_MIN" =~ ^[0-9]+$ ]] || PREV_MIN=0
+
+          cd release-tools
+          node image-map.mjs --compose ../docker-compose.yml --registry "ghcr.io/${OWNER}" \
+            --ours "web=${{ steps.web.outputs.digest }},setup=${{ steps.setup.outputs.digest }},db=${{ steps.db.outputs.digest }},updater=${{ steps.updater.outputs.digest }}" \
+            --out "$RUNNER_TEMP/images.json"
+          FLAGS=(); [ "$REQUIRED" = true ] && FLAGS+=(--required)
+          node make-release.mjs --compose ../docker-compose.yml --images "$RUNNER_TEMP/images.json" \
+            --version "$VERSION" --update-url "$BASE" --notes-file "$RUNNER_TEMP/notes.txt" \
+            --sources "$RUNNER_TEMP/sources.json" --prev-min-sequence "$PREV_MIN" "${FLAGS[@]}" \
+            --out ../dist --sign --pub ../updater/release-signing.pub.pem
+          # Verify with the updater's own code, exactly as a student install will.
+          node verify-dist.mjs ../dist
+
+          # The generated compose file must be valid for docker compose (dummy secrets).
+          cd ..
+          POSTGRES_PASSWORD=x JWT_SECRET=x ANON_KEY=x SERVICE_ROLE_KEY=x docker compose -f dist/docker-compose.yml config -q
+
+      - name: Fresh-install bundle
+        working-directory: mdp/local-deploy
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          rm -rf "$RUNNER_TEMP/bundle" && mkdir -p "$RUNNER_TEMP/bundle/MyDegreePlan"
+          cp dist/docker-compose.yml mdp.cmd mdp.ps1 mdp.sh README.md "$RUNNER_TEMP/bundle/MyDegreePlan/"
+          (cd "$RUNNER_TEMP/bundle" && zip -qr "$GITHUB_WORKSPACE/mdp/local-deploy/dist/MyDegreePlan-$VERSION.zip" MyDegreePlan)
+          ls -l dist
+
+      # Draft first, publish last: `latest/download/...` must never serve half a release.
+      - name: Publish
+        working-directory: mdp/local-deploy
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" --title "MyDegreePlan $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.txt" \
+            dist/release.json dist/release.json.sig dist/docker-compose.yml "dist/MyDegreePlan-$VERSION.zip"
+          gh release edit "v$VERSION" --draft=false --latest
+
+      - name: Verify what students will download
+        working-directory: mdp/local-deploy
+        run: |
+          mkdir -p "$RUNNER_TEMP/live"
+          for f in release.json release.json.sig docker-compose.yml; do
+            curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/$f" -o "$RUNNER_TEMP/live/$f"
+          done
+          node release-tools/verify-dist.mjs "$RUNNER_TEMP/live"
+          echo "### Released v${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Students' apps will offer it within ~6 hours (or on their next app load)." >> "$GITHUB_STEP_SUMMARY"

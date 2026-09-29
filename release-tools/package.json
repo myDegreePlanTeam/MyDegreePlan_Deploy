@@ -1,0 +1,13 @@
+{
+  "name": "mdp-release-tools",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Builds and signs a MyDegreePlan release: the digest-pinned compose file and the signed release.json the in-app updater trusts.",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "yaml": "^2.8.0"
+  }
+}

@@ -1,0 +1,13 @@
+# Per-install secrets and student data never get committed.
+.env
+.env.bak
+backups/
+mydegreeplan-images.tar
+
+# Release signing key (public half is committed at updater/release-signing.pub.pem)
+*.key.pem
+# Written by the launcher from the mdp_update_state volume
+.mdp-active-compose.yml
+.mdp-active-compose.yml.tmp
+node_modules/
+dist/

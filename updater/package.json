@@ -1,0 +1,10 @@
+{
+  "name": "mdp-updater",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "In-stack updater for the MyDegreePlan local install. Zero dependencies on purpose: it holds the Docker socket.",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

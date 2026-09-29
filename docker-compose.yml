@@ -1,0 +1,193 @@
+# MyDegreePlan — self-contained local stack. Nothing here talks to Vercel, Supabase
+# Cloud, or any other outside service.
+#
+#   db      Postgres (Supabase's image: ships the roles + auth schema GoTrue expects)
+#   auth    GoTrue     – email/password sign-up and sign-in
+#   migrate one-shot   – applies setup/sql/*.sql
+#   rest    PostgREST  – the /rest/v1 API supabase-js calls
+#   web     nginx      – serves the app, proxies /rest/v1 and /auth/v1
+#   seed    one-shot   – loads the course catalog (seed.js)
+#   updater checks for signed releases and applies them on request (see README)
+#
+# Only `web` is published, and only on 127.0.0.1: the database and APIs have no
+# host ports at all. Secrets come from .env, which `mdp start` generates.
+name: mydegreeplan
+
+# The migrate and seed one-shots run the same image (SQL + seed.js + psql).
+x-setup: &setup
+  image: mydegreeplan/setup:local
+  build:
+    context: ..
+    dockerfile: local-deploy/setup/Dockerfile
+  restart: "no"
+
+services:
+  db:
+    container_name: mdp-db
+    # supabase/postgres plus db/roles.sql baked in (a host bind mount would not survive
+    # the updater recreating the stack from inside a container).
+    image: mydegreeplan/db:local
+    build:
+      context: ./db
+    restart: unless-stopped
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf -c log_min_messages=fatal
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD:?run mdp start first}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+      POSTGRES_DB: postgres
+      JWT_EXP: 3600
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-config:/etc/postgresql-custom
+
+  auth:
+    container_name: mdp-auth
+    image: supabase/gotrue:v2.196.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: http://localhost:${MDP_PORT:-8080}
+      GOTRUE_SITE_URL: http://localhost:${MDP_PORT:-8080}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_ISSUER: http://localhost:${MDP_PORT:-8080}
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      # No mail server exists here, so accounts are confirmed on sign-up.
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+
+  migrate:
+    <<: *setup
+    container_name: mdp-migrate
+    command: ["sql"]
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy   # GoTrue has created/updated the auth schema
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  rest:
+    container_name: mdp-rest
+    image: postgrest/postgrest:v14.17
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_MAX_ROWS: 1000
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_ADMIN_SERVER_HOST: localhost
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_EXP: 3600
+
+  web:
+    container_name: mdp-web
+    image: mydegreeplan/web:local
+    build:
+      context: ..
+      dockerfile: local-deploy/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      rest:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    environment:
+      ANON_KEY: ${ANON_KEY}
+    ports:
+      - "127.0.0.1:${MDP_PORT:-8080}:80"
+    healthcheck:
+      # Goes through nginx to GoTrue, so it proves the proxy path works too.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/auth/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # The only container with the Docker socket, which is root-equivalent on the host.
+  # Hence: no host ports, reachable only through nginx (/_mdp/update/*) with a login
+  # token, no npm dependencies, and it acts only on releases signed by the key baked
+  # into its image. `docker-compose.yml` in a student bundle is generated by
+  # release-tools/make-release.mjs with these values filled in and images pinned.
+  updater:
+    container_name: mdp-updater
+    image: mydegreeplan/updater:local
+    build:
+      context: ./updater
+    restart: unless-stopped
+    environment:
+      MDP_VERSION: ${MDP_VERSION:-dev}
+      MDP_SEQUENCE: ${MDP_SEQUENCE:-0}
+      MDP_UPDATE_URL: ${MDP_UPDATE_URL:-}      # empty = updates disabled (developer builds)
+      MDP_UPDATES: ${MDP_UPDATES:-on}          # `MDP_UPDATES=off` in .env turns the update check off
+      MDP_PORT: ${MDP_PORT:-8080}
+      MDP_PROJECT: mydegreeplan
+      MDP_DB_VOLUME: mdp_db_data
+      MDP_STATE_VOLUME: mdp_update_state
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update-state:/state
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seed:
+    <<: *setup
+    container_name: mdp-seed
+    command: ["seed"]
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      SUPABASE_URL: http://web
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+
+volumes:
+  db-data:
+    name: mdp_db_data
+  db-config:
+    name: mdp_db_config
+  update-state:
+    name: mdp_update_state

@@ -1,0 +1,28 @@
+# Fast checks on every push and PR. The updater holds the Docker socket, so its tests
+# and the release tooling's tests are worth running on every change.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Updater
+        working-directory: updater
+        run: npm test
+      - name: Release tooling
+        working-directory: release-tools
+        run: npm ci && npm test
+      - name: Launcher scripts parse
+        run: sh -n mdp.sh
+      - name: Updater image builds
+        run: docker build -t mdp-updater-ci updater

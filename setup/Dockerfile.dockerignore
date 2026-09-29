@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.git
+**/.env
+**/.env.*
+**/*.pdf
+**/.claude
+MyDegreePlan_Frontend
+MyDegreePlan_Prototype/coursesFile.json
+local-deploy/data
+local-deploy/backups
