@@ -100,10 +100,14 @@ init_env() {
 }
 port() { sed -n 's/^MDP_PORT=\([0-9]*\).*/\1/p' "$ENV_FILE" | head -n1; }
 
+# Best effort: a missing or failing browser launcher must never fail `start`. `open` is only
+# the macOS opener; on Debian/Ubuntu `open` is an unrelated program that exits non-zero.
 open_url() {
-  if command -v open >/dev/null 2>&1; then open "$1"
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || true
-  fi
+  case "$(uname -s)" in
+    Darwin) open "$1" >/dev/null 2>&1 || true ;;
+    *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || true; fi ;;
+  esac
+  return 0
 }
 
 # ── commands ─────────────────────────────────────────────────────────────────
