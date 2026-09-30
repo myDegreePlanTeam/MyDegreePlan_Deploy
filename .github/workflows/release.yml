@@ -251,3 +251,20 @@ jobs:
           node release-tools/verify-dist.mjs "$RUNNER_TEMP/live"
           echo "### Released v${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Students' apps will offer it within ~6 hours (or on their next app load)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Tells the landing page to rebuild so its download button shows this version. Best
+      # effort on purpose: the release is already live, and the site also rebuilds daily.
+      # SITE_DISPATCH_TOKEN: fine-grained token with Contents: read/write on MyDegreePlan_Site only.
+      - name: Notify the landing page
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::SITE_DISPATCH_TOKEN is not set; the landing page will pick this release up on its next daily rebuild."
+            exit 0
+          fi
+          gh api "repos/${GITHUB_REPOSITORY_OWNER}/MyDegreePlan_Site/dispatches" \
+            -f event_type=release-published -f "client_payload[version]=$VERSION"
+          echo "Landing page rebuild requested for v$VERSION." >> "$GITHUB_STEP_SUMMARY"
