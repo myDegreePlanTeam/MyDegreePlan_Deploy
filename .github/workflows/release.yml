@@ -231,6 +231,7 @@ jobs:
 
       # Draft first, publish last: `latest/download/...` must never serve half a release.
       - name: Publish
+        id: publish
         working-directory: mdp/local-deploy
         env:
           VERSION: ${{ inputs.version }}
@@ -243,22 +244,37 @@ jobs:
 
       - name: Verify what students will download
         working-directory: mdp/local-deploy
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          mkdir -p "$RUNNER_TEMP/live"
-          for f in release.json release.json.sig docker-compose.yml; do
-            # `latest/download` can 404 for a few seconds after publishing while GitHub's CDN
-            # catches up, so retry (also on 404) before calling the release broken.
-            curl -fsSL --retry 12 --retry-delay 5 --retry-all-errors \
-              "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/$f" -o "$RUNNER_TEMP/live/$f"
+          # `latest/download` is an alias GitHub updates a few seconds after publishing. Until it
+          # does, files can 404 or come from the previous release (a new release.json.sig next to
+          # an old release.json fails verification). So retry the whole download + verify, and only
+          # accept a bundle that is actually this version.
+          fetch_and_check() {
+            rm -rf "$RUNNER_TEMP/live" && mkdir -p "$RUNNER_TEMP/live"
+            for f in release.json release.json.sig docker-compose.yml; do
+              curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/$f" -o "$RUNNER_TEMP/live/$f" || return 1
+            done
+            [ "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).version" "$RUNNER_TEMP/live/release.json")" = "$VERSION" ] || return 1
+            node release-tools/verify-dist.mjs "$RUNNER_TEMP/live"
+          }
+          ok=0
+          for attempt in $(seq 1 18); do
+            if fetch_and_check; then ok=1; break; fi
+            echo "Attempt $attempt: latest/download is not serving a valid v$VERSION yet; retrying in 10s"
+            sleep 10
           done
-          node release-tools/verify-dist.mjs "$RUNNER_TEMP/live"
-          echo "### Released v${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          [ "$ok" = 1 ] || { echo "::error::latest/download never served a verifying v$VERSION bundle"; exit 1; }
+          echo "### Released v$VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "Students' apps will offer it within ~6 hours (or on their next app load)." >> "$GITHUB_STEP_SUMMARY"
 
       # Tells the landing page to rebuild so its download button shows this version. Best
       # effort on purpose: the release is already live, and the site also rebuilds daily.
       # SITE_DISPATCH_TOKEN: fine-grained token with Contents: read/write on MyDegreePlan_Site only.
       - name: Notify the landing page
+        # Runs whenever the release was published, even if the check above flaked.
+        if: ${{ !cancelled() && steps.publish.conclusion == 'success' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
