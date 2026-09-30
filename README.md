@@ -10,7 +10,15 @@ The whole planner (app, accounts, database) running in Docker on **one computer*
 2. **Windows:** double-click `mdp.cmd`. **Mac/Linux:** open a terminal in the folder and run `sh mdp.sh start`.
 3. The first start takes a few minutes. Your browser then opens to `http://localhost:8080`. Click **Create account** (any email and an 8+ character password; nothing is emailed or verified) and start planning.
 
-Day to day: run the same thing to start it, `mdp stop` when you're done (your plan is kept). Docker Desktop can also just be left running; the app restarts with it.
+### Coming back later (one click)
+
+- **Windows:** the first successful start adds a **MyDegreePlan** shortcut to your Desktop. Double-click it any time. If Docker Desktop is not running it is started for you (allow a minute or two), then the app opens in your browser. The console window closes itself when it is done; if something goes wrong it stays open so you can read the message.
+- **Mac:** run `sh mdp.sh start` again; it launches Docker Desktop first if needed. (No Desktop shortcut on Mac/Linux yet.)
+- **Already have Docker Desktop running?** The app restarts along with it, so `http://localhost:8080` works without running anything. Bookmark it. In Docker Desktop's settings you can turn on **Start Docker Desktop when you sign in** and the app is then simply there whenever the computer is on.
+- `mdp stop` when you're done if you'd like it off (your plan is kept).
+- **Keep the `.env` file** in the MyDegreePlan folder. It belongs to your data; if you move to a new folder without it, the launcher refuses to start rather than lock you out. Copy the whole folder, `.env` included.
+
+Set `MDP_NO_SHORTCUT=1` (environment variable) before the first start if you do not want the Desktop shortcut.
 
 ### Updates
 

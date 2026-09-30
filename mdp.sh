@@ -22,9 +22,28 @@ USE_ACTIVE=0
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# macOS only: launch Docker Desktop and wait for it. (A Linux Docker daemon needs root to start,
+# so there we only explain.) MDP_DOCKER_APP / MDP_DOCKER_WAIT override the app path / wait for tests.
+start_docker_desktop() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  app="${MDP_DOCKER_APP:-/Applications/Docker.app}"
+  [ -d "$app" ] || return 0
+  echo 'Docker Desktop is not running. Starting it (this can take a minute or two)...'
+  open -a "$app" >/dev/null 2>&1 || return 0
+  waited=0
+  while [ "$waited" -lt "${MDP_DOCKER_WAIT:-180}" ]; do
+    if docker info >/dev/null 2>&1; then echo 'Docker is ready.'; return 0; fi
+    sleep 3; waited=$((waited + 3))
+  done
+}
+
+# need_docker --start: also try to launch Docker Desktop first (used by `start` only).
 need_docker() {
   command -v docker >/dev/null 2>&1 || fail 'Docker is not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop), start it, and run this again.'
-  docker info >/dev/null 2>&1 || fail 'Docker is installed but not running. Start Docker Desktop, wait until it says "running", then try again.'
+  if ! docker info >/dev/null 2>&1; then
+    if [ "${1:-}" = --start ]; then start_docker_desktop; fi
+    docker info >/dev/null 2>&1 || fail 'Docker is installed but not running. Start Docker Desktop, wait until it says "running", then try again.'
+  fi
   resolve_compose
 }
 
@@ -103,6 +122,7 @@ port() { sed -n 's/^MDP_PORT=\([0-9]*\).*/\1/p' "$ENV_FILE" | head -n1; }
 # Best effort: a missing or failing browser launcher must never fail `start`. `open` is only
 # the macOS opener; on Debian/Ubuntu `open` is an unrelated program that exits non-zero.
 open_url() {
+  [ -z "${MDP_NO_BROWSER:-}" ] || return 0
   case "$(uname -s)" in
     Darwin) open "$1" >/dev/null 2>&1 || true ;;
     *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || true; fi ;;
@@ -133,7 +153,7 @@ package() {
 }
 
 start() {
-  need_docker; init_env; import_images
+  need_docker --start; init_env; import_images
   echo 'Starting MyDegreePlan (the first run downloads/builds images and can take several minutes)...'
   if [ "$BUILD" = 1 ]; then flag=--build; else flag=; fi
   # shellcheck disable=SC2086
