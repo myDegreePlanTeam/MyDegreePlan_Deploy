@@ -15,11 +15,17 @@ RUN npm ci --omit=dev
 COPY MyDegreePlan_Prototype/seed.js MyDegreePlan_Prototype/slotSync.js MyDegreePlan_Prototype/prototype.json ./
 COPY MyDegreePlan_Prototype/csc_core.json MyDegreePlan_Prototype/csc_cybersecurity.json \
      MyDegreePlan_Prototype/csc_dsai.json MyDegreePlan_Prototype/csc_hpc.json ./
+# Flight Foundations variants (students entering Fall 2026+; DSAI has none).
+COPY MyDegreePlan_Prototype/csc_core_ff.json MyDegreePlan_Prototype/csc_cybersecurity_ff.json \
+     MyDegreePlan_Prototype/csc_hpc_ff.json ./
 
 # SQL applied in filename order. 010/020 are the project's own files, copied as-is:
 #   - MATH1000 is not in prototype.json, so the seed script never inserts it
 #   - test_equivalencies.sql is a clean delete-and-reinsert (safe to re-run)
 COPY local-deploy/setup/sql/ ./sql/
+# 001: tier 21 adds requirement_slots/student_profiles.gened_program (idempotent). It sorts
+# after 000_baseline.sql and before the seed, which needs the column.
+COPY MyDegreePlan_Prototype/migration_tier21.sql    ./sql/001_tier21_gened_program.sql
 COPY MyDegreePlan_Prototype/migration_math1000.sql  ./sql/010_math1000.sql
 COPY MyDegreePlan_Prototype/test_equivalencies.sql  ./sql/020_test_equivalencies.sql
 

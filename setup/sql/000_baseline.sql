@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS requirement_slots (
   slot_order       INTEGER,
   class_code       TEXT    NOT NULL,
   is_pool          BOOLEAN NOT NULL DEFAULT false,
-  flex_credits     INTEGER
+  flex_credits     INTEGER,
+  gened_program    TEXT    NOT NULL DEFAULT 'legacy'                -- tier 21
 );
 
 CREATE TABLE IF NOT EXISTS test_equivalencies (
@@ -88,7 +89,8 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   act_science      INTEGER,
   act_reading      INTEGER,
   act_composite    INTEGER,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  gened_program    TEXT        NOT NULL DEFAULT 'legacy'   -- tier 21
 );
 
 CREATE TABLE IF NOT EXISTS student_plan_slots (
