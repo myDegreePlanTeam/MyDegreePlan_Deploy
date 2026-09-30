@@ -7,3 +7,6 @@ nginx.conf text eol=lf
 *.mjs text eol=lf
 *.js  text eol=lf
 *.json text eol=lf
+
+# Windows batch launchers: cmd.exe is happiest with CRLF, and the release zip is built on Linux.
+*.cmd text eol=crlf
