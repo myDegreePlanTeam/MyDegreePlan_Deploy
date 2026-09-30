@@ -180,22 +180,31 @@ function Save-LaunchedCompose {
 }
 
 # One-click re-entry: a Desktop shortcut to this launcher (which also starts Docker if needed).
-# Created once; never fails `start` (MDP_NO_SHORTCUT=1 skips it, MDP_SHORTCUT_DIR redirects it for tests).
+# Created on the first successful start, and repointed if it targets a different folder (the
+# install was moved, reinstalled or unzipped elsewhere). A shortcut of that name that does not
+# point at an mdp.cmd is someone else's and is left alone. Never fails `start`
+# (MDP_NO_SHORTCUT=1 skips it, MDP_SHORTCUT_DIR redirects it for tests).
 function New-DesktopShortcut {
     if ($env:MDP_NO_SHORTCUT) { return }
     try {
         $dir = if ($env:MDP_SHORTCUT_DIR) { $env:MDP_SHORTCUT_DIR } else { [Environment]::GetFolderPath('Desktop') }
         if (-not $dir -or -not (Test-Path $dir)) { return }
         $path = Join-Path $dir 'MyDegreePlan.lnk'
-        if (Test-Path $path) { return }
+        $target = Join-Path $PSScriptRoot 'mdp.cmd'
+        $existed = Test-Path $path
         $sh = New-Object -ComObject WScript.Shell
-        $lnk = $sh.CreateShortcut($path)
-        $lnk.TargetPath = Join-Path $PSScriptRoot 'mdp.cmd'
+        $lnk = $sh.CreateShortcut($path)   # loads the existing file when there is one
+        if ($existed) {
+            if ((Split-Path $lnk.TargetPath -Leaf) -ine 'mdp.cmd') { return }   # not ours
+            if ($lnk.TargetPath -ieq $target) { return }                        # already right
+        }
+        $lnk.TargetPath = $target
         $lnk.WorkingDirectory = $PSScriptRoot
         $lnk.Description = 'Open MyDegreePlan'
         $lnk.WindowStyle = 7   # minimized: the console closes by itself once the app is open
         $lnk.Save()
-        Write-Host 'Added a "MyDegreePlan" shortcut to your Desktop. Double-click it any time to open the app.' -ForegroundColor Green
+        if ($existed) { Write-Host 'Pointed your "MyDegreePlan" Desktop shortcut at this folder.' -ForegroundColor Green }
+        else { Write-Host 'Added a "MyDegreePlan" shortcut to your Desktop. Double-click it any time to open the app.' -ForegroundColor Green }
     } catch { }
 }
 

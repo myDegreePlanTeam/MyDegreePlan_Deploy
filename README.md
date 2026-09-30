@@ -12,7 +12,7 @@ The whole planner (app, accounts, database) running in Docker on **one computer*
 
 ### Coming back later (one click)
 
-- **Windows:** the first successful start adds a **MyDegreePlan** shortcut to your Desktop. Double-click it any time. If Docker Desktop is not running it is started for you (allow a minute or two), then the app opens in your browser. The console window closes itself when it is done; if something goes wrong it stays open so you can read the message.
+- **Windows:** the first successful start adds a **MyDegreePlan** shortcut to your Desktop. Double-click it any time. If Docker Desktop is not running it is started for you (allow a minute or two), then the app opens in your browser. The console window closes itself when it is done; if something goes wrong it stays open so you can read the message. If you later move the folder or unzip a newer copy somewhere else, the next start points that shortcut at the new folder.
 - **Mac:** run `sh mdp.sh start` again; it launches Docker Desktop first if needed. (No Desktop shortcut on Mac/Linux yet.)
 - **Already have Docker Desktop running?** The app restarts along with it, so `http://localhost:8080` works without running anything. Bookmark it. In Docker Desktop's settings you can turn on **Start Docker Desktop when you sign in** and the app is then simply there whenever the computer is on.
 - `mdp stop` when you're done if you'd like it off (your plan is kept).
