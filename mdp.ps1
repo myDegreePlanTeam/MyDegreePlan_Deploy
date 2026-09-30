@@ -28,12 +28,39 @@ $ActiveFile  = Join-Path $PSScriptRoot '.mdp-active-compose.yml'
 
 function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 
-function Test-Docker {
+# Docker Desktop's usual install locations. MDP_DOCKER_DESKTOP overrides (used by the tests).
+function Find-DockerDesktop {
+    if ($env:MDP_DOCKER_DESKTOP) { return $env:MDP_DOCKER_DESKTOP }
+    foreach ($p in @("$env:ProgramFilesDockerDockerDocker Desktop.exe", "$env:LOCALAPPDATAProgramsDockerDockerDocker Desktop.exe")) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    return $null
+}
+
+# -Start: if Docker is installed but not running, launch Docker Desktop and wait for it
+# (`start` only; other commands have nothing to do when Docker is off).
+function Test-Docker([switch]$Start) {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         Fail 'Docker is not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop), start it, and run this again.'
     }
     docker info *> $null
-    if ($LASTEXITCODE -ne 0) { Fail 'Docker is installed but not running. Start Docker Desktop, wait until it says "running", then try again.' }
+    if ($LASTEXITCODE -eq 0) { return }
+    if ($Start) {
+        $exe = Find-DockerDesktop
+        if ($exe -and (Test-Path $exe)) {
+            Write-Host 'Docker Desktop is not running. Starting it (this can take a minute or two)...'
+            Start-Process $exe
+            $wait = if ($env:MDP_DOCKER_WAIT) { [int]$env:MDP_DOCKER_WAIT } else { 180 }
+            $deadline = (Get-Date).AddSeconds($wait)
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Seconds 3
+                docker info *> $null
+                if ($LASTEXITCODE -eq 0) { Write-Host 'Docker is ready.'; return }
+            }
+            Fail 'Docker Desktop was started but is not ready yet. Wait until it says "running", then open MyDegreePlan again.'
+        }
+    }
+    Fail 'Docker is installed but not running. Start Docker Desktop, wait until it says "running", then try again.'
 }
 
 # ── which compose file is current ────────────────────────────────────────────
@@ -152,8 +179,28 @@ function Save-LaunchedCompose {
     docker cp $file 'mdp-updater:/state/launched.yml' *> $null
 }
 
+# One-click re-entry: a Desktop shortcut to this launcher (which also starts Docker if needed).
+# Created once; never fails `start` (MDP_NO_SHORTCUT=1 skips it, MDP_SHORTCUT_DIR redirects it for tests).
+function New-DesktopShortcut {
+    if ($env:MDP_NO_SHORTCUT) { return }
+    try {
+        $dir = if ($env:MDP_SHORTCUT_DIR) { $env:MDP_SHORTCUT_DIR } else { [Environment]::GetFolderPath('Desktop') }
+        if (-not $dir -or -not (Test-Path $dir)) { return }
+        $path = Join-Path $dir 'MyDegreePlan.lnk'
+        if (Test-Path $path) { return }
+        $sh = New-Object -ComObject WScript.Shell
+        $lnk = $sh.CreateShortcut($path)
+        $lnk.TargetPath = Join-Path $PSScriptRoot 'mdp.cmd'
+        $lnk.WorkingDirectory = $PSScriptRoot
+        $lnk.Description = 'Open MyDegreePlan'
+        $lnk.WindowStyle = 7   # minimized: the console closes by itself once the app is open
+        $lnk.Save()
+        Write-Host 'Added a "MyDegreePlan" shortcut to your Desktop. Double-click it any time to open the app.' -ForegroundColor Green
+    } catch { }
+}
+
 function Start-Stack {
-    Test-Docker
+    Test-Docker -Start
     Initialize-EnvFile
     Import-Images
     Write-Host 'Starting MyDegreePlan (the first run downloads/builds images and can take several minutes)...'
@@ -175,7 +222,8 @@ function Start-Stack {
     }
     $url = "http://localhost:$(Get-Port)"
     Write-Host "MyDegreePlan is running at $url  (only this computer can reach it)" -ForegroundColor Green
-    Start-Process $url
+    New-DesktopShortcut
+    if (-not $env:MDP_NO_BROWSER) { Start-Process $url }
 }
 
 function Stop-Stack { Test-Docker; Dc down; Write-Host 'Stopped. Your data is kept.' }
