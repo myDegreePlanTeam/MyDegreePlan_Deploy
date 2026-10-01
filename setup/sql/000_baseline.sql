@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   gened_program    TEXT        NOT NULL DEFAULT 'legacy'   -- tier 21
 );
+-- sat_math: an SAT Math score places a student the way an ACT Math score does (see mathPlacement.js in the
+-- frontend). Its own statement so a database whose table already exists gains the column too.
+ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS sat_math INTEGER;
 
 CREATE TABLE IF NOT EXISTS student_plan_slots (
   id                   INTEGER     GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -113,6 +116,9 @@ CREATE TABLE IF NOT EXISTS student_plan_slots (
   position_source      TEXT        CHECK (position_source IN ('algorithm','student')),  -- tier 18
   UNIQUE (student_id, requirement_slot_id)                     -- target of every upsert onConflict
 );
+-- selected_credits: the credit hours a student chose for a pool pick whose course carries a range
+-- (courses.credits .. courses.credits_max). NULL for a fixed-credit course.
+ALTER TABLE student_plan_slots ADD COLUMN IF NOT EXISTS selected_credits INTEGER;
 ALTER TABLE student_plan_slots DROP CONSTRAINT IF EXISTS student_plan_slots_archive_reason_check;
 ALTER TABLE student_plan_slots ADD CONSTRAINT student_plan_slots_archive_reason_check
   CHECK (archive_reason IN ('prior_credit','banner_import','not_applicable'));
@@ -144,6 +150,9 @@ CREATE TABLE IF NOT EXISTS student_free_add_slots (           -- tier 6
 -- (not inline above) so a database whose table already exists gains the column too.
 ALTER TABLE student_free_add_slots
   ADD COLUMN IF NOT EXISTS fills_slot_id INTEGER REFERENCES requirement_slots(id) ON DELETE CASCADE;
+-- credits: the credit hours a student chose for an added course whose catalog entry carries a range
+-- (courses.credits .. courses.credits_max). NULL for a fixed-credit course.
+ALTER TABLE student_free_add_slots ADD COLUMN IF NOT EXISTS credits INTEGER;
 
 CREATE TABLE IF NOT EXISTS prior_credits (                    -- tier 7
   id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
