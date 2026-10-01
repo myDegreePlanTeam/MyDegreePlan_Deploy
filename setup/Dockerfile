@@ -13,11 +13,8 @@ RUN npm ci --omit=dev
 
 # Seed script + catalog data (single source of truth stays in MyDegreePlan_Prototype).
 COPY MyDegreePlan_Prototype/seed.js MyDegreePlan_Prototype/slotSync.js MyDegreePlan_Prototype/courses.json ./
-COPY MyDegreePlan_Prototype/csc_core.json MyDegreePlan_Prototype/csc_cybersecurity.json \
-     MyDegreePlan_Prototype/csc_dsai.json MyDegreePlan_Prototype/csc_hpc.json ./
-# Flight Foundations variants (students entering Fall 2026+; DSAI has none).
-COPY MyDegreePlan_Prototype/csc_core_ff.json MyDegreePlan_Prototype/csc_cybersecurity_ff.json \
-     MyDegreePlan_Prototype/csc_hpc_ff.json ./
+# The degree plans (programs, pools, slots per catalog year), generated from degree-specs/ in the prototype repo.
+COPY MyDegreePlan_Prototype/degree_plans.json ./
 
 # SQL applied in filename order. 010/020 are the project's own files, copied as-is:
 #   - MATH1000 is not in courses.json, so the seed script never inserts it

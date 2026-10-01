@@ -53,6 +53,38 @@ CREATE TABLE IF NOT EXISTS concentrations (
   name        TEXT    NOT NULL,
   total_hours INTEGER
 );
+-- A row here is a degree PROGRAM: a major (a degree on its own) or a concentration of one. The table kept its
+-- original name so student_profiles.concentration_id and every stored plan stay valid; the app says "program".
+-- Their own statements so a database whose table already exists gains the columns too.
+--   kind               'major' | 'concentration'
+--   degree             e.g. 'B.S.'
+--   major_name         what the picker groups programs under (a concentration shares its major's name)
+--   department         owning department code
+--   supersedes         code of the program this one replaces
+--   last_catalog_year  the last catalog year that may choose this program (NULL = still open)
+--   description        shown to students choosing a program
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS kind              TEXT NOT NULL DEFAULT 'concentration';
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS degree            TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS major_name        TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS department        TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS supersedes        TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS last_catalog_year TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS description       TEXT;
+ALTER TABLE concentrations DROP CONSTRAINT IF EXISTS concentrations_kind_check;
+ALTER TABLE concentrations ADD CONSTRAINT concentrations_kind_check CHECK (kind IN ('major','concentration'));
+
+-- One row per program per catalog year: the index of which degree plan exists. A student's plan is the one for
+-- their catalog year (or the latest earlier one); covers_earlier marks a program's first plan as also serving
+-- every older catalog year. The slots themselves are requirement_slots rows with the same catalog_year.
+CREATE TABLE IF NOT EXISTS degree_plans (
+  id               INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  concentration_id INTEGER NOT NULL REFERENCES concentrations(id) ON DELETE CASCADE,
+  catalog_year     TEXT    NOT NULL,                      -- '2026-2027'
+  gened_program    TEXT    NOT NULL DEFAULT 'legacy',     -- 'legacy' | 'flight_foundations'
+  total_hours      INTEGER,
+  covers_earlier   BOOLEAN NOT NULL DEFAULT false,
+  UNIQUE (concentration_id, catalog_year)                 -- target of the seed's upsert onConflict
+);
 
 -- Tier 17: semester_number / slot_order are nullable hints, no unique constraint.
 CREATE TABLE IF NOT EXISTS requirement_slots (
@@ -65,6 +97,12 @@ CREATE TABLE IF NOT EXISTS requirement_slots (
   flex_credits     INTEGER,
   gened_program    TEXT    NOT NULL DEFAULT 'legacy'                -- tier 21
 );
+-- catalog_year: the degree plan a slot belongs to (see degree_plans). slot_key: the slot's stable identity
+-- within its plan, which is how the seed keeps a slot's id (and every student's saved pick) across spec edits.
+-- map_semester: the semester the department's degree map recommends for the slot, when one is published.
+ALTER TABLE requirement_slots ADD COLUMN IF NOT EXISTS catalog_year TEXT;
+ALTER TABLE requirement_slots ADD COLUMN IF NOT EXISTS slot_key     TEXT;
+ALTER TABLE requirement_slots ADD COLUMN IF NOT EXISTS map_semester INTEGER;
 
 CREATE TABLE IF NOT EXISTS test_equivalencies (
   id                  BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -101,6 +139,13 @@ CREATE TABLE IF NOT EXISTS student_profiles (
 -- sat_math: an SAT Math score places a student the way an ACT Math score does (see mathPlacement.js in the
 -- frontend). Its own statement so a database whose table already exists gains the column too.
 ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS sat_math INTEGER;
+-- catalog_year: the catalog year of the degree plan the student's slots belong to, stored at onboarding
+-- (never recomputed, so a plan keeps its slots when a newer year is added). Students who onboarded before
+-- catalog years existed follow the plan their gen-ed program implied.
+ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS catalog_year TEXT;
+UPDATE student_profiles
+   SET catalog_year = CASE gened_program WHEN 'flight_foundations' THEN '2026-2027' ELSE '2025-2026' END
+ WHERE catalog_year IS NULL AND concentration_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS student_plan_slots (
   id                   INTEGER     GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -189,7 +234,7 @@ DECLARE
   own TEXT;
 BEGIN
   -- Catalog tables: anyone may read, nobody but service_role (seed) may write.
-  FOREACH t IN ARRAY ARRAY['courses','concentrations','requirement_slots',
+  FOREACH t IN ARRAY ARRAY['courses','concentrations','degree_plans','requirement_slots',
                            'prerequisite_entries','corequisite_entries','test_equivalencies']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -233,7 +278,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authen
 
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 
-GRANT SELECT ON courses, concentrations, requirement_slots, prerequisite_entries,
+GRANT SELECT ON courses, concentrations, degree_plans, requirement_slots, prerequisite_entries,
                 corequisite_entries, test_equivalencies             TO anon, authenticated;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
