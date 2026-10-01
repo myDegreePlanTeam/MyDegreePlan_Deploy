@@ -125,7 +125,7 @@ Actions → **Release** → Run workflow:
 | `required` | Tick only for urgent fixes: older installs are blocked until they update |
 | `frontend_ref` / `prototype_ref` | Branch, tag or SHA to build (default `main`); the exact commits are recorded in `release.json` |
 
-The `release` environment asks for approval, then CI runs the tests, builds, signs, checks the result, and publishes. Students' apps pick it up on their next start or within about 6 hours. A catalog change (JSON/SQL in `MyDegreePlan_Prototype`) is shipped the same way: the seed runs on every update and existing data is kept. Schema changes: edit `setup/sql/000_baseline.sql` (or add an idempotent `setup/sql/NNN_*.sql`) alongside the usual `migration_tierN.sql`, and if a migration adds a table, `GRANT` it explicitly.
+The `release` environment asks for approval, then CI runs the tests, builds, signs, checks the result, and publishes. Students' apps pick it up on their next start or within about 6 hours. A catalog change (JSON/SQL in `MyDegreePlan_Prototype`) is shipped the same way: the seed runs on every update and existing data is kept. Schema changes: edit `setup/sql/000_baseline.sql` (or add an idempotent `setup/sql/NNN_*.sql`) and, for a student table, the `STUDENT_TABLES` defaults in the Frontend's `src/lib/data/localClient.js`. There are no Supabase `migration_tierN.sql` files any more. If the change adds a table, `GRANT` it explicitly. Code that reads a new column should tolerate an install whose setup step has not re-run (retry the read without it).
 
 ### Students already on the old (pre-updater) bundle
 
@@ -152,7 +152,7 @@ Data: Docker volumes `mdp_db_data` / `mdp_db_config` (database) and `mdp_update_
 - **Freeze attack:** someone able to answer a student's network requests could replay an old (validly signed) release to keep them from seeing a new one. They cannot make them run anything.
 - **The updater's Docker access cannot be removed** for a one-click button; the safeguards above are what keep it narrow. Someone who already controls the student's Docker or the GitHub repo/signing key is outside what this protects.
 - Compose prints "pull access denied" for `mydegreeplan/*` images on the first `--build` run. That's harmless: they are local-only images and it goes on to build them.
-- The image's default grants gave `anon`/`authenticated` every privilege (including TRUNCATE) on new tables; `000_baseline.sql` now revokes them and grants only what the app needs. A new migration that adds a table must GRANT it explicitly.
+- The image's default grants gave `anon`/`authenticated` every privilege (including TRUNCATE) on new tables; `000_baseline.sql` now revokes them and grants only what the app needs. A schema change that adds a table must GRANT it explicitly.
 - **The base schema is reconstructed.** `courses`, `concentrations`, `requirement_slots`, `student_profiles`, `student_plan_slots`, `student_semester_notes` and the catalog tables were created by hand in the Supabase dashboard and were never in the repo. `000_baseline.sql` rebuilds them from `seed.js`, the frontend's queries, and migration tiers 6–20. Diff it against `pg_dump --schema-only` of the hosted project before trusting edge cases (extra constraints, defaults, indexes).
 - A `student_profiles` auth trigger is mentioned in a comment in `Signup.jsx`; it is not recreated. `Dashboard.jsx` already inserts the profile if it's missing, so sign-up works without it.
 - No email: accounts auto-confirm and there is no self-service password reset (`reset-password` covers it).
