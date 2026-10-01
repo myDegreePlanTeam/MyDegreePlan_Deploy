@@ -133,6 +133,11 @@ CREATE TABLE IF NOT EXISTS student_free_add_slots (           -- tier 6
                               CHECK (status IN ('planned','in_progress','completed')),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- fills_slot_id: a Free Elective slot filled by several courses. A follow-up pick points at
+-- the slot whose hours it fills; NULL for ordinary "+ Add course" rows. Its own statement
+-- (not inline above) so a database whose table already exists gains the column too.
+ALTER TABLE student_free_add_slots
+  ADD COLUMN IF NOT EXISTS fills_slot_id INTEGER REFERENCES requirement_slots(id) ON DELETE CASCADE;
 
 CREATE TABLE IF NOT EXISTS prior_credits (                    -- tier 7
   id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
