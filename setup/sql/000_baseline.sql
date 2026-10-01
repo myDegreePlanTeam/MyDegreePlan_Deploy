@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS courses (
   description  TEXT,
   standing_req TEXT              -- 'junior' | 'senior' | NULL
 );
+-- The full Coursedog catalog. credits is the hours the planner counts (the minimum of a variable-credit
+-- range); credits_max is the top of that range, NULL for a fixed-credit course. requisite_text keeps a
+-- prerequisite statement the planner could not turn into rules, so it can be shown without being enforced.
+-- Their own statements so a database whose table already exists gains the columns too.
+ALTER TABLE courses ADD COLUMN IF NOT EXISTS credits_max    INTEGER;
+ALTER TABLE courses ADD COLUMN IF NOT EXISTS requisite_text TEXT;
 
 CREATE TABLE IF NOT EXISTS prerequisite_entries (
   id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
