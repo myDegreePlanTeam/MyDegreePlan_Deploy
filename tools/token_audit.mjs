@@ -17,7 +17,8 @@
 // What it measures (from the session transcripts under ~/.claude/projects/<workspace>/*.jsonl)
 //   * the size of every Bash / PowerShell / Read / Grep result, by category (git, tests, lint, docker, builds, file reads,
 //     python/node edit scripts, ...), with call counts, share and the largest result of each
-//   * how often CLAUDE.md was read although it is already loaded, and how many results exceed 8,000 characters
+//   * how often CLAUDE.md was read IN FULL although it is already loaded (a ranged lookup is fine and counted apart), and
+//     how many results exceed 8,000 characters
 //   * tokens are characters / 4, an estimate; characters are exact, except an image, which is priced at a flat 6,000
 //     characters (its base64 size says nothing about what it costs)
 // And, for orientation (weak proxies for code quality, not a verdict): per repo, commits in the window, the share that
@@ -80,7 +81,10 @@ const tok = chars => '~' + fmt(chars / 4)
 // ---------- transcripts ----------
 // Order matters: the first matching category wins.
 const CATEGORIES = [
-  ['claude-md-read', c => /\bCLAUDE\.md\b/.test(c) && /^(cat|head|sed|tail|type)\b/.test(c)],
+  // a whole-file read of CLAUDE.md (already loaded at session start). A ranged read (sed -n, head, tail, or cat piped to
+  // one of them) is a legitimate lookup and falls through to file-reads.
+  // `cat > file <<EOF` that merely mentions CLAUDE.md is a write, not a read.
+  ['claude-md-read', c => /\bCLAUDE\.md\b/.test(c) && /^(cat|type)\b/.test(c) && !/^(cat|type)\s*>/.test(c) && !/<</.test(c) && !/\|\s*(head|sed|tail)\b/.test(c)],
   ['tests', c => /vitest|npm (run )?test|node --test|npm run verify|\btest_\w+\.(sh|py|mjs)/.test(c)],
   ['lint', c => /eslint|npm run lint/.test(c)],
   ['git', c => /^git\b|\bgit -C\b/.test(c)],
@@ -89,7 +93,7 @@ const CATEGORIES = [
   ['edit-tools', c => /multi_replace|json_patch/.test(c)],
   ['edit-scripts', c => /python3? -?\s*<<|python3? - |python3? -c|node -e|node -\s*<</.test(c)],
   ['builds', c => /build:catalog|vite build|npm run build|degrees:|degree-specs\/build|build_courses/.test(c)],
-  ['file-reads', c => /^(cat|sed -n|head|tail|less|type)\b/.test(c)],
+  ['file-reads', c => /^(cat|sed -n|head|tail|less|type)\b/.test(c) && !/^(cat|type)\s*>/.test(c) && !/<</.test(c)], // not `cat > f <<EOF`, a write
 ]
 const bashCategory = cmd => {
   const c = String(cmd).replace(/\s+/g, ' ').trim().replace(/^(cd [^&;]+(&&|;) ?)+/, '').replace(/^\S+=\S+ /, '')
@@ -108,6 +112,7 @@ let totalChars = 0
 let big = 0
 let claudeReads = 0
 let claudeChars = 0
+let claudeRanged = 0
 const biggest = []
 const bump = (name, chars, label2) => {
   const c = (cats[name] ??= { calls: 0, chars: 0, max: 0 })
@@ -134,8 +139,16 @@ for (const f of readdirSync(dir).filter(n => n.endsWith('.jsonl'))) {
         if (!inWindow(o.timestamp)) continue
         const n = b.name
         const input = b.input ?? {}
-        if (n === 'Bash' || n === 'PowerShell') pending.set(b.id, { category: bashCategory(input.command), what: String(input.command ?? '').replace(/\s+/g, ' ').slice(0, 70) })
-        else if (n === 'Read') pending.set(b.id, { category: /CLAUDE\.md$/.test(String(input.file_path)) ? 'claude-md-read' : 'Read tool', what: basename(String(input.file_path ?? '')) })
+        if (n === 'Bash' || n === 'PowerShell') {
+          const category = bashCategory(input.command)
+          const cmd = String(input.command ?? '').replace(/\s+/g, ' ').trim().replace(/^(cd [^&;]+(&&|;) ?)+/, '')
+          pending.set(b.id, { category, ranged: category !== 'claude-md-read' && /\bCLAUDE\.md\b/.test(cmd) && /^(cat|head|sed|tail|type)\b/.test(cmd) && !/^(cat|type)\s*>/.test(cmd) && !/<</.test(cmd),
+            what: String(input.command ?? '').replace(/\s+/g, ' ').slice(0, 70) })
+        } else if (n === 'Read') {
+          const isClaudeMd = /CLAUDE\.md$/.test(String(input.file_path))
+          const isRange = input.offset != null || input.limit != null
+          pending.set(b.id, { category: isClaudeMd && !isRange ? 'claude-md-read' : 'Read tool', ranged: isClaudeMd && isRange, what: basename(String(input.file_path ?? '')) })
+        }
         else if (n === 'Grep') pending.set(b.id, { category: 'Grep', what: String(input.pattern ?? '').slice(0, 50) })
       } else if (b?.type === 'tool_result' && pending.has(b.tool_use_id)) {
         const p = pending.get(b.tool_use_id)
@@ -144,6 +157,7 @@ for (const f of readdirSync(dir).filter(n => n.endsWith('.jsonl'))) {
         bump(p.category, chars, p.what)
         sessionIds.add(f)
         if (p.category === 'claude-md-read') { claudeReads += 1; claudeChars += chars }
+        else if (p.ranged) claudeRanged += 1
       }
     }
   }
@@ -188,7 +202,7 @@ out.push('category        calls     chars  share    max')
 for (const [name, c] of Object.entries(cats).sort((a, b) => b[1].chars - a[1].chars).slice(0, 10)) {
   out.push(`${name.padEnd(14)} ${String(c.calls).padStart(6)} ${fmt(c.chars).padStart(9)} ${String(Math.round((100 * c.chars) / (totalChars || 1))).padStart(5)}% ${fmt(c.max).padStart(6)}`)
 }
-out.push(`CLAUDE.md read explicitly ${claudeReads}x (${fmt(claudeChars)} chars; it is already loaded)  results over 8k chars: ${big}`)
+out.push(`CLAUDE.md read in full ${claudeReads}x (${fmt(claudeChars)} chars; it is already loaded), ${claudeRanged} ranged lookup(s) (fine)  results over 8k chars: ${big}`)
 out.push('largest: ' + biggest.sort((a, b) => b.chars - a.chars).slice(0, 4).map(b => `${fmt(b.chars)} ${b.what.slice(0, 44)}`).join(' | '))
 if (repoRows.length) {
   out.push(`repos since ${sinceForGit}:`)
