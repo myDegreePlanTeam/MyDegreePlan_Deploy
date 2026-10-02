@@ -24,5 +24,10 @@ jobs:
         run: npm ci && npm test
       - name: Launcher scripts parse
         run: sh -n mdp.sh && bash -n release-tools/preflight.sh
+      - name: Workspace tools
+        run: |
+          node --test tools/test_json_patch.mjs
+          python3 -m unittest tools/test_multi_replace.py
+          bash tools/test_finish_pr.sh
       - name: Updater image builds
         run: docker build -t mdp-updater-ci updater

@@ -1,5 +1,6 @@
 # These run inside Linux containers / a POSIX shell; CRLF would break them.
 *.sh  text eol=lf
+*.py  text eol=lf
 *.sql text eol=lf
 *.yml text eol=lf
 nginx.conf text eol=lf
