@@ -12,7 +12,9 @@
 #
 # Per repo it prints: the current branch and how far it is from origin/main, local main vs origin/main, the dirty
 # files, the PR for the current branch, and one line per other local branch:
-#     in main                     nothing on it that main lacks
+#     in origin/main              nothing on it that origin/main lacks (judged against origin, not the local main; when the
+#                                 local main is behind and lacks it too, the line says so: `git branch -d` refuses it then,
+#                                 so pull first or use the -D command printed below)
 #     PR #n merged, tip == head   the branch is exactly what was merged (a squash merge makes `git branch -d` refuse
 #                                 these; they are safe to delete)
 #     PR #n merged, +K beyond     commits were added after the PR head: keep, they were never reviewed
@@ -111,7 +113,12 @@ for REPO in "${REPOS[@]}"; do
     tip="$(g rev-parse "refs/heads/$b")"
     ahead="?"; [ -n "$BASE" ] && ahead="$(g rev-list --count "$BASE..$tip")"
     if [ "$ahead" = 0 ]; then
-      echo "   branch $b: in ${BASE#origin/}"; deletable+=("$b"); continue
+      msg="in $BASE"
+      # `git branch -d` judges against the local branch, which may be behind origin: the branch is safe to delete, but -d refuses it
+      if g rev-parse -q --verify "refs/heads/${BASE#origin/}" >/dev/null && [ "$(g rev-list --count "refs/heads/${BASE#origin/}..$tip")" != 0 ]; then
+        msg="$msg, not yet in local ${BASE#origin/} (behind): git branch -d refuses it; pull first or use -D"
+      fi
+      echo "   branch $b: $msg"; deletable+=("$b"); continue
     fi
     pr=""; [ -n "$PRS" ] && pr="$(printf '%s\n' "$PRS" | pr_for "$b" "$tip")"
     if [ -z "$pr" ]; then

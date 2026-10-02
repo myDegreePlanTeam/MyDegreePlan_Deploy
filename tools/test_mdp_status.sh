@@ -43,6 +43,8 @@ world() {
   NOW="$(git -C "$R" rev-parse feat/now)"
   # origin moves on by one commit, so the current branch is behind
   (cd "$T/seed" && echo more > more.txt && git add . && git commit -qm more && git push -q origin main)
+  # contained in origin/main but not in the (behind) local main: the case where `git branch -d` refuses a safe delete
+  git -C "$R" fetch -q && git -C "$R" branch inorigin origin/main
   echo dirty > "$R/base.txt"; echo new > "$R/untracked.txt"
   cat > "$T/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -70,7 +72,9 @@ check "local main is behind origin/main" 'echo "$OUT" | grep -q "local main: beh
 check "counts dirty files (modified + untracked)" 'echo "$OUT" | grep -q "dirty: 2"'
 check "lists the dirty files" 'echo "$OUT" | grep -q " M base.txt" && echo "$OUT" | grep -q "?? untracked.txt"'
 check "current branch PR shown" 'echo "$OUT" | grep -q "PR #12 OPEN, pushed"'
-check "branch with nothing new is in main" 'echo "$OUT" | grep -q "branch inmain: in main"'
+check "branch with nothing new is in origin/main, with no warning when local main has it too" 'echo "$OUT" | grep -q "branch inmain: in origin/main$"'
+check "branch contained in origin/main but not in the behind local main says so and how to delete it" 'echo "$OUT" | grep -q "branch inorigin: in origin/main, not yet in local main (behind): git branch -d refuses it; pull first or use -D"'
+check "both are offered as deletable" 'echo "$OUT" | grep "deletable (not run)" | grep -q "inorigin"'
 check "merged branch with tip == PR head" 'echo "$OUT" | grep -q "branch merged-same: PR #9 merged, tip == head"'
 check "merged branch with a later commit is kept" 'echo "$OUT" | grep -q "branch merged-extra: PR #8 merged, +1 beyond the PR head: keep"'
 check "open PR branch" 'echo "$OUT" | grep -q "branch open-one: PR #7 open, +1 vs main"'
@@ -85,7 +89,7 @@ echo "--no-gh judges by commit counts only"
 world; status --no-gh
 check "no gh call made" '[ ! -s "$FAKE_LOG" ]'
 check "PR state unknown, not a false 'no PR'" 'echo "$OUT" | grep -q "branch open-one: PR state unknown, +1 vs main" && ! echo "$OUT" | grep -q "no PR,"'
-check "still finds the branch contained in main" 'echo "$OUT" | grep -q "branch inmain: in main"'
+check "still finds the branch contained in origin/main" 'echo "$OUT" | grep -q "branch inmain: in origin/main$"'
 
 echo "gh failing degrades with a note, never a crash"
 world; export FAKE_GH_FAIL=1; status
