@@ -19,6 +19,12 @@
 // To run something deliberately anyway (a repro of the hang under `timeout`), put `# guard_bash: allow` in the command.
 // Heredoc BODIES are never scanned for commands: a script that merely contains the text `python3 -` is fine.
 //
+// What it only advises on (never blocks; exit 0 with hookSpecificOutput.additionalContext on stdout)
+//   4. A doubled backslash in a python or node script (a heredoc fed to the interpreter, or a -c / -e program) where the pair
+//      is followed by a character that makes an escape. The Bash tool delivers a typed pair as ONE backslash (retro 2026-10-02,
+//      three times: `'courses\\n'` in a python string became a real newline and broke two test runs; `\\d` lost its
+//      backslash). The hook sees the text as typed, before that happens, so it can say so in time. See advise().
+//
 // Limits: it is a line scanner, not a shell parser. Quotes are tracked only well enough to ignore `<<EOF` text inside
 // a quoted string. It aims for no false blocks on commands written the usual way, and says why when it blocks.
 import { readFileSync } from 'node:fs'
@@ -71,6 +77,51 @@ export function inspect(command) {
   return problems
 }
 
+// A doubled backslash typed in a Bash command can reach the shell as ONE (verified 2026-10-02 on this machine: printf '%s' 'a\\b'
+// printed a\b; the Write and Edit tools keep both). Inside a python or node script that quietly changes what the script means:
+// '\\n' in a python string becomes '\n' and the script writes a real newline (it broke two test runs), '\\d' in a node string
+// becomes '\d' and loses its backslash, '\\b' becomes a backspace. Only where the character after the pair makes an escape
+// that means something else when the pair is one backslash: python n r t b f v 0-7 x u U N and quotes, node any letter, digit,
+// quote or backtick. Advice only: it is not always a mistake and a guard must not block a working command (about 8% of the
+// 497 python/node scripts in the transcripts have one; the blocks above are for commands that hang, this one is a prompt).
+const PY_ESCAPE_PAIR = /\\\\[nrtbfv0-7xuUN'"]/
+const NODE_ESCAPE_PAIR = /\\\\[A-Za-z0-9'"`]/
+const SCRIPT_OPENER = /(?:^|[\s;&|(])(python3?|py|node)\b[^\n]*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/
+const INLINE_SCRIPT = /(?:^|[\s;&|(])(python3?|py|node)\s+(?:-[A-Za-z]+\s+)*-[ce]\b/
+
+// the python/node source in a command: heredoc bodies fed to an interpreter, and everything from a `-c` / `-e` onward
+function scriptsIn(command) {
+  const lines = String(command ?? '').replace(/\r\n/g, '\n').split('\n')
+  const found = []
+  let open = null // {lang, tag, dash, body: []}
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (open) {
+      const text = open.dash ? line.replace(/^\t+/, '') : line
+      if (text === open.tag) { found.push({ lang: open.lang, text: open.body.join('\n') }); open = null } else open.body.push(line)
+      continue
+    }
+    const inline = line.match(INLINE_SCRIPT)
+    if (inline) found.push({ lang: inline[1] === 'node' ? 'node' : 'python', text: lines.slice(i).join('\n') })
+    const m = line.match(SCRIPT_OPENER)
+    if (m && !inQuote(line.slice(0, m.index))) open = { lang: m[1] === 'node' ? 'node' : 'python', tag: m[3], dash: /<<-/.test(line), body: [] }
+  }
+  if (open) found.push({ lang: open.lang, text: open.body.join('\n') })
+  return found
+}
+
+export function advise(command) {
+  if (ALLOW_MARKER.test(String(command ?? ''))) return []
+  const notes = []
+  for (const { lang, text } of scriptsIn(command)) {
+    const m = text.match(lang === 'node' ? NODE_ESCAPE_PAIR : PY_ESCAPE_PAIR)
+    if (!m) continue
+    const at = text.slice(Math.max(0, m.index - 20), m.index + 24).replace(/\n/g, ' ')
+    notes.push(`a doubled backslash in the ${lang} script (…${at}…) reaches the shell as ONE, so that escape means something else`)
+  }
+  return notes.slice(0, 3)
+}
+
 // is the text before `quote-so-far` inside an unclosed single or double quote?
 function inQuote(prefix) {
   let single = false
@@ -92,7 +143,15 @@ function main() {
   if (typeof command !== 'string' || !command.trim()) return 0
   let problems
   try { problems = inspect(command) } catch { return 0 }
-  if (!problems.length) return 0
+  if (!problems.length) {
+    let notes = []
+    try { notes = advise(command) } catch { /* advice is optional */ }
+    if (notes.length) {
+      const context = `guard_bash (advice, the command was not blocked): ${notes.join('; ')}. Typed in a Bash command a doubled backslash can arrive as one: put the script in a file with the Write tool and run it, or build the backslash with chr(92) / String.fromCharCode(92). Check the result for a real newline or a missing backslash. (# guard_bash: allow silences this.)`
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }) + '\n')
+    }
+    return 0
+  }
   console.error(`guard_bash: blocked before running, because it would hang or flood the shell:\n  - ${problems.join('\n  - ')}\nFix the command and run it again (an empty heredoc to an interpreter, or a bare interpreter, is never intended here).`)
   return 2
 }
