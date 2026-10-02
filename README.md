@@ -116,6 +116,16 @@ What this does **not** protect against: whoever holds the signing key (or can ch
 
 ### Shipping a release
 
+Run the preflight first: `bash release-tools/preflight.sh 1.3.0` (from this folder, in Git Bash on Windows). It changes nothing and checks what has cost a release time before:
+
+- **Sources are pushed.** The workflow builds `origin/main` of the Frontend and Prototype (unless you set `frontend_ref` / `prototype_ref`), so a commit that is only local is silently left out of the release.
+- **The version is free.** Versions are immutable, and a failed run does not give one back if a draft was already created.
+- **The release lane is empty.** The workflow's concurrency group is `release` with `cancel-in-progress: false`, so a duplicate dispatch, or a run nobody approved, holds the lane and every later run queues behind it (one held it for about 7 hours). Cancel the stale one with `gh run cancel <id>`.
+- **The Frontend tests pass with no Prototype next to them.** The workflow's `test` job checks out only the Frontend. Tests that read the Prototype's files must skip when it is absent (`describe.skipIf(!existsSync(...))`). Renaming your local `MyDegreePlan_Prototype` folder does not reproduce this; a fresh clone does, which is what the preflight runs.
+- **The Prototype tests pass.** The workflow does not run them.
+
+After the dispatch the run sits at **Waiting** until someone approves the `release` environment (Actions → the run → Review deployments). It then builds, signs, runs `release-tools/verify-dist.mjs` (the updater's own verification code, on the files as a student's install will see them), publishes, and re-downloads `latest/download/…` to verify again. `verify-dist` needs no separate run. To button-test the in-app Update, turn **auto updates off** on that install first: with them on it applies the release itself within minutes.
+
 Actions → **Release** → Run workflow:
 
 | Input | |
