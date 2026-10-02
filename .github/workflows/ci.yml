@@ -29,5 +29,6 @@ jobs:
           node --test tools/test_json_patch.mjs
           python3 -m unittest tools/test_multi_replace.py
           bash tools/test_finish_pr.sh
+          bash tools/test_mdp_status.sh
       - name: Updater image builds
         run: docker build -t mdp-updater-ci updater
