@@ -128,10 +128,39 @@ class Counting(Case):
         self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\nx\n"), 1)
         self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\n@@@ new\nx\n"), 1)
 
-    def test_a_file_listed_twice_is_refused(self):
+    def test_a_file_listed_twice_has_its_edits_merged_in_order_with_a_note(self):
         p = self.put("a.txt", b"x\ny\n")
-        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\n1\n@@@ file {p}\n@@@ old\ny\n@@@ new\n2\n"), 1)
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\n1\n@@@ file {p}\n@@@ old\ny\n@@@ new\n2\n"), 0)
+        self.assertEqual(self.get(p), b"1\n2\n")
+        self.assertTrue(any("was listed 2 times" in line and "merged" in line for line in self.log))
+        self.assertTrue(any(line.startswith("edited ") and "(2 edits" in line for line in self.log))
+
+    def test_the_later_block_sees_the_earlier_blocks_result(self):
+        p = self.put("a.txt", b"x\n")
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\ny\n@@@ file {p}\n@@@ old\ny\n@@@ new\nz\n"), 0)
+        self.assertEqual(self.get(p), b"z\n")
+
+    def test_a_failing_edit_in_a_merged_block_writes_nothing_and_names_its_line(self):
+        p = self.put("a.txt", b"x\ny\n")
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\n1\n@@@ file {p}\n@@@ old\nmissing\n@@@ new\n2\n"), 1)
         self.assertEqual(self.get(p), b"x\ny\n")
+        self.assertTrue(any("expected 1 match, found 0" in line and "(line 7)" in line for line in self.log))
+
+    def test_the_same_file_spelled_two_ways_is_one_file(self):
+        p = self.put("a.txt", b"x\ny\n")
+        alt = os.path.join(os.path.dirname(p), ".", "a.txt")
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\n1\n@@@ file {alt}\n@@@ old\ny\n@@@ new\n2\n"), 0)
+        self.assertEqual(self.get(p), b"1\n2\n")
+
+    def test_json_entries_for_one_file_merge_too_and_a_crlf_file_stays_crlf(self):
+        p = self.put("a.txt", b"x\r\ny\r\n")
+        self.assertEqual(self.run_json({"files": [{"path": p, "edits": [{"old": "x", "new": "1"}]}, {"path": p, "edits": [{"old": "y", "new": "2"}]}]}), 0)
+        self.assertEqual(self.get(p), b"1\r\n2\r\n")
+
+    def test_no_note_when_every_file_is_listed_once(self):
+        a, b = self.put("a.txt", b"x\n"), self.put("b.txt", b"y\n")
+        self.assertEqual(self.run_blocks(f"@@@ file {a}\n@@@ old\nx\n@@@ new\n1\n@@@ file {b}\n@@@ old\ny\n@@@ new\n2\n"), 0)
+        self.assertFalse(any(line.startswith("note:") for line in self.log))
 
 
 class Refusing(Case):

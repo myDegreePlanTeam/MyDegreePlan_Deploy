@@ -13,8 +13,9 @@ What it guarantees
   * control characters in `old`/`new` are refused. In JSON, "\\b" is a BACKSPACE, not a regex word boundary: write
     "\\\\b". That mistake silently corrupted two regexes once; the block format below needs no escaping at all.
   * a file with mixed line endings is refused rather than guessed at
-  * edits to one file apply in order (the second sees the first's result); exit codes: 0 done, 1 refused (nothing
-    written), 2 bad spec or unreadable file, 64 usage
+  * edits to one file apply in order (the second sees the first's result); a file named in more than one `@@@ file`
+    block (or spelled two ways) has its edits merged in the order written, with a note, not refused
+  * exit codes: 0 done, 1 refused (nothing written), 2 bad spec or unreadable file, 64 usage
 
 Block format (no escaping; good with a quoted heredoc)
 
@@ -250,17 +251,30 @@ def read_text(path: str) -> str:
         raise SpecError(f"{path}: not valid UTF-8 ({e})")
 
 
-def run(spec_text: str, dry_run: bool = False, out=print) -> int:
-    files = parse_spec(spec_text)
-    problems: list = []
-    results = []
-    seen = set()
+def merge_duplicate_files(files: list):
+    """A file named in several blocks (or spelled two ways: a.txt, ./a.txt) becomes one FileEdits whose edits keep the
+    spec's order, so the later block sees the earlier one's result. Returns (files, notes)."""
+    merged: dict = {}
+    seen_blocks: dict = {}
     for f in files:
         key = os.path.normcase(os.path.abspath(f.path))
-        if key in seen:
-            problems.append(f"{f.path}: listed twice; put its edits under one '@@@ file'")
-            continue
-        seen.add(key)
+        seen_blocks[key] = seen_blocks.get(key, 0) + 1
+        if key in merged:
+            merged[key].edits.extend(f.edits)
+        else:
+            merged[key] = FileEdits(f.path, list(f.edits))
+    notes = [f"note: {merged[k].path} was listed {n} times; its edits are merged in the order written"
+             for k, n in seen_blocks.items() if n > 1]
+    return list(merged.values()), notes
+
+
+def run(spec_text: str, dry_run: bool = False, out=print) -> int:
+    files, notes = merge_duplicate_files(parse_spec(spec_text))
+    for n in notes:
+        out(n)
+    problems: list = []
+    results = []
+    for f in files:
         if not os.path.isfile(f.path):
             problems.append(f"{f.path}: no such file")
             continue
