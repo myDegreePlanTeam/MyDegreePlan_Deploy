@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS concentrations (
 --   supersedes         code of the program this one replaces
 --   last_catalog_year  the last catalog year that may choose this program (NULL = still open)
 --   description        shown to students choosing a program
+--   college            a college code (degree-specs/colleges.json in the prototype repo); the picker's first level
+--   major_code         groups a major with its concentrations (the picker's second level)
+--   is_base            true for the program that is the major itself, with no concentration
+--   aliases            extra words the picker's search matches, comma separated ("CS, comp sci")
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS kind              TEXT NOT NULL DEFAULT 'concentration';
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS degree            TEXT;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS major_name        TEXT;
@@ -70,6 +74,10 @@ ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS department        TEXT;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS supersedes        TEXT;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS last_catalog_year TEXT;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS description       TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS college           TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS major_code        TEXT;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS is_base           BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS aliases           TEXT;
 ALTER TABLE concentrations DROP CONSTRAINT IF EXISTS concentrations_kind_check;
 ALTER TABLE concentrations ADD CONSTRAINT concentrations_kind_check CHECK (kind IN ('major','concentration'));
 
