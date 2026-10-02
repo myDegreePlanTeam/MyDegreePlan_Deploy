@@ -61,10 +61,32 @@ test('counts calls and result characters by category, with an image priced flat'
   assert.match(out, /^edit-scripts +1 +200/m)
 })
 
-test('counts reading CLAUDE.md as redundant, by Bash cat and by the Read tool', () => {
+test('counts reading CLAUDE.md in full as redundant, by Bash cat and by the Read tool', () => {
   const { out } = audit()
-  assert.match(out, /CLAUDE\.md read explicitly 2x \(8\.0k chars/)
+  assert.match(out, /CLAUDE\.md read in full 2x \(8\.0k chars; it is already loaded\), 0 ranged/)
   assert.match(out, /results over 8k chars: 1\b/) // the 9,000-char test run; the image is flat 6,000
+})
+
+test('a ranged read of CLAUDE.md (sed -n, head, tail, a piped cat, Read with offset or limit) is not counted as redundant', () => {
+  const dir2 = join(root, 'transcripts-ranged')
+  mkdirSync(dir2)
+  writeFileSync(join(dir2, 'r.jsonl'), jsonl([
+    ...pair('2026-10-01T10:00:00Z', 'Bash', { command: 'cat docs/claude/CLAUDE.md' }, 'x'.repeat(5000)), // whole file: counted
+    ...pair('2026-10-01T10:01:00Z', 'Read', { file_path: '/w/docs/claude/CLAUDE.md' }, 'x'.repeat(3000)), // whole file: counted
+    ...pair('2026-10-01T10:02:00Z', 'Bash', { command: 'sed -n 1,20p docs/claude/CLAUDE.md' }, 'x'.repeat(400)),
+    ...pair('2026-10-01T10:03:00Z', 'Bash', { command: 'cd /w && cat docs/claude/CLAUDE.md | head -30' }, 'x'.repeat(300)),
+    ...pair('2026-10-01T10:04:00Z', 'Bash', { command: 'head -5 CLAUDE.md' }, 'x'.repeat(100)),
+    ...pair('2026-10-01T10:05:00Z', 'Bash', { command: 'tail -n 20 docs/claude/CLAUDE.md' }, 'x'.repeat(200)),
+    ...pair('2026-10-01T10:06:00Z', 'Read', { file_path: '/w/docs/claude/CLAUDE.md', offset: 100, limit: 40 }, 'x'.repeat(500)),
+    ...pair('2026-10-01T10:07:00Z', 'Read', { file_path: '/w/docs/claude/CLAUDE.md', limit: 50 }, 'x'.repeat(200)),
+    // writing a note that mentions CLAUDE.md is not reading it
+    ...pair('2026-10-01T10:08:00Z', 'Bash', { command: "cat > memory/note.md <<'EOF'\nsee CLAUDE.md for the layout\nEOF" }, 'x'.repeat(10)),
+  ]))
+  const r = spawnSync(process.execPath, [SCRIPT, '--dir', dir2, '--log', log, '--metrics', metrics, '--repos', 'none'], { encoding: 'utf8' })
+  assert.match(r.stdout, /CLAUDE\.md read in full 2x \(8\.0k chars; it is already loaded\), 6 ranged lookup\(s\) \(fine\)/)
+  assert.match(r.stdout, /^claude-md-read +2 +8\.0k/m)
+  assert.match(r.stdout, /^file-reads +4 +/m) // the four ranged Bash lookups
+  assert.match(r.stdout, /^Read tool +2 +700/m) // the two ranged Read calls
 })
 
 test('--since and --until window the calls by timestamp', () => {
