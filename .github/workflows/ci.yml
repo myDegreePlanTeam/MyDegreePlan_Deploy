@@ -31,5 +31,6 @@ jobs:
           bash tools/test_finish_pr.sh
           bash tools/test_mdp_status.sh
           node --test tools/test_token_audit.mjs
+          bash tools/test_open_pr.sh
       - name: Updater image builds
         run: docker build -t mdp-updater-ci updater
