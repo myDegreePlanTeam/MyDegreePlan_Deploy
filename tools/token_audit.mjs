@@ -28,7 +28,8 @@
 //   i.e. FIXED | date | match: <case-insensitive regex> | how. The regex may contain `|` (alternation) but not a space
 //   between pipes; `how` must not contain " | " (the last " | " ends the regex). Every entry written AFTER that line
 //   (file order is time order) that matches the regex is reported as RECURRED. A match is a prompt to look, not proof:
-//   the retro decides.
+//   the retro decides. A recurrence that a LATER FIXED line also matches is already dealt with (the fix for the
+//   recurrence): it is counted as handled, not reported, so it does not come back in every later retro.
 //
 // Read-only apart from --record. Needs only node.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
@@ -202,15 +203,21 @@ logLines.forEach((text, i) => {
   if (m) fixed.push({ at: i, date: m[1].trim(), re: m[2].trim(), how: m[3].trim() })
 })
 if (flag('--check-log') || fixed.length) {
-  const recurred = []
+  const usable = []
   for (const f of fixed) {
-    let re
-    try { re = new RegExp(f.re, 'i') } catch { out.push(`FIXED line ${f.at + 1}: bad regex /${f.re}/`); continue }
+    try { usable.push({ ...f, test: new RegExp(f.re, 'i') }) } catch { out.push(`FIXED line ${f.at + 1}: bad regex /${f.re}/`) }
+  }
+  const recurred = []
+  let handled = 0
+  for (const f of usable) {
     for (let i = f.at + 1; i < logLines.length; i++) {
-      if (isEntry(logLines[i]) && re.test(logLines[i])) recurred.push({ f, n: i + 1, text: logLines[i] })
+      if (!isEntry(logLines[i]) || !f.test.test(logLines[i])) continue
+      // a later FIXED line that matches this entry is the fix for this very recurrence
+      if (usable.some(g => g !== f && g.at > i && g.test.test(logLines[i]))) handled += 1
+      else recurred.push({ f, n: i + 1, text: logLines[i] })
     }
   }
-  out.push(`fixed marker: ${fixed.length} fixed, ${recurred.length} recurrence(s) to look at`)
+  out.push(`fixed marker: ${fixed.length} fixed, ${recurred.length} recurrence(s) to look at${handled ? ` (${handled} already handled by a later FIXED)` : ''}`)
   for (const r of recurred) out.push(`  RECURRED line ${r.n}: ${r.text.split('|').slice(2, 4).join('|').trim().slice(0, 100)}  <- fixed ${r.f.date} by ${r.f.how.slice(0, 60)}`)
 }
 
