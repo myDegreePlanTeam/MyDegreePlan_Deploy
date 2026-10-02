@@ -162,3 +162,98 @@ test('usage errors exit 64 and a missing transcript directory exits 2', () => {
   const r = spawnSync(process.execPath, [SCRIPT, '--dir', join(root, 'nope'), '--repos', 'none'], { encoding: 'utf8' })
   assert.equal(r.status, 2)
 })
+
+// ---------- --commands ----------
+const cwork = join(root, 'cmd-workspace')
+mkdirSync(join(cwork, '.claude'), { recursive: true })
+writeFileSync(join(cwork, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(git -C * rev-list *)', 'Bash(npm run:*)', 'mcp__srv__read_thing'] } }))
+const cdir = join(root, 'cmd-transcripts')
+mkdirSync(cdir)
+const times = (n, ts, name, input) => Array.from({ length: n }, () => use(ts, name, input))
+writeFileSync(join(cdir, 'c.jsonl'), jsonl([
+  ...times(4, '2026-10-01T10:00:00Z', 'Bash', { command: 'cd /w && git -C Repo rev-list main..x 2>&1 | head -5' }), // allowed by a rule; 2>&1 is not a command
+  ...times(5, '2026-10-01T10:01:00Z', 'Bash', { command: 'git status --short' }), // auto-allowed
+  ...times(3, '2026-10-01T10:02:00Z', 'Bash', { command: 'gh secret list --repo R' }), // read-only, not allowed
+  ...times(3, '2026-10-01T10:03:00Z', 'Bash', { command: 'bash tools/x.sh --a' }), // a script: judge
+  ...times(3, '2026-10-01T10:04:00Z', 'Bash', { command: 'git push origin main' }), // writes
+  ...times(3, '2026-10-01T10:05:00Z', 'Bash', { command: "python3 - <<'EOF'\nprint(1)\nEOF" }), // runs code
+  ...times(3, '2026-10-01T10:06:00Z', 'Bash', { command: 'npx eslint .' }), // runs code
+  ...times(3, '2026-10-01T10:07:00Z', 'Bash', { command: "cat > f <<'EOF'\ngit push\nEOF" }), // heredoc body is text
+  ...times(3, '2026-10-01T10:08:00Z', 'Bash', { command: 'echo "a && git push" ; (cd /w && git -C Repo log -1)' }), // quoted text; a subshell
+  ...times(3, '2026-10-01T10:09:00Z', 'Bash', { command: 'out=$(gh run view 1 --repo R) && echo $out' }), // the command inside the assignment
+  ...times(2, '2026-10-01T10:10:00Z', 'Bash', { command: 'gh pr view 5 && gh run watch 9' }), // rare: hidden by --min 3
+  ...times(3, '2026-10-01T10:11:00Z', 'mcp__srv__read_thing', {}), // already allowed
+  ...times(4, '2026-10-01T10:12:00Z', 'mcp__srv__list_items', {}), // read-only by name
+  ...times(5, '2026-10-01T10:13:00Z', 'mcp__srv__javascript_tool', {}), // reads by no name
+  ...times(3, '2026-10-05T10:00:00Z', 'Bash', { command: 'git fetch --prune' }), // later window
+]))
+const commands = (...extra) => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--commands', '--dir', cdir, '--repos', 'none', '--metrics', join(root, 'never.tsv'), ...extra], { encoding: 'utf8', env: { ...process.env, MDP_ROOT: cwork } })
+  return { code: r.status, out: r.stdout, err: r.stderr }
+}
+
+test('--commands sorts commands into suggest, judge, writes and runs-code, and hides auto-allowed ones', () => {
+  const { code, out } = commands()
+  assert.equal(code, 0)
+  assert.match(out, /SUGGEST \(read-only, not allowed yet\):\n +3 +Bash\(gh secret list \*\)/)
+  assert.match(out, /JUDGE .*:\n(?:.*\n)*? +3 +bash tools\/x\.sh/)
+  assert.match(out, /WRITES \(never allowlist\): git push 3/)
+  assert.match(out, /RUNS CODE \(never a wildcard rule\): .*python3 - 3/)
+  assert.match(out, /RUNS CODE .*npx eslint 3/)
+  assert.doesNotMatch(out, /Bash\(git status/) // auto-allowed
+})
+
+test('--commands counts commands, not calls: a heredoc body, quoted text and 2>&1 are not commands', () => {
+  const { out } = commands()
+  assert.match(out, /WRITES \(never allowlist\): git push 3\b/) // not 9: the heredoc body and the quoted text add none
+  assert.doesNotMatch(commands('--sample', '1').out, /time\(s\)/) // 2>&1 never became a command called 1
+  assert.match(commands('--sample', 'run').out, /run: not seen/) // out=$(gh run view ...) is gh run view
+})
+
+test('--commands removes what a settings rule already allows and says how many that was', () => {
+  const { out } = commands()
+  assert.doesNotMatch(out, /rev-list/)
+  assert.match(out, /already covered by a rule/)
+  // 4 rev-list calls are covered; git status (5) and git log (3, with -C: a suggestion)
+  assert.match(out, /not listed: \d+ auto-allowed .*, 4 already covered/)
+})
+
+test('--commands treats git -C as a command that needs its own rule, plain git read-only as auto-allowed', () => {
+  assert.match(commands().out, /Bash\(git -C \* log \*\)/)
+})
+
+test('--commands lists MCP tools that read by name and are not allowed, never the ones that act', () => {
+  const { out } = commands()
+  assert.match(out, /SUGGEST MCP.*:\n +4 +mcp__srv__list_items/)
+  assert.doesNotMatch(out, /read_thing/) // allowed by an exact rule
+  assert.doesNotMatch(out, /javascript_tool/)
+})
+
+test('--commands: --min hides the rare, --top caps a list, --since limits the window', () => {
+  assert.doesNotMatch(commands().out, /gh pr view|gh run watch/) // 2 each, under the default 3
+  assert.match(commands('--min', '2').out, /gh run watch/)
+  assert.doesNotMatch(commands('--top', '1').out, /mcp__srv__list_items.*\n.*mcp__/)
+  assert.match(commands().out, /git fetch +|git fetch/)
+  assert.doesNotMatch(commands('--until', '2026-10-02').out, /git fetch/)
+  assert.match(commands('--since', '2026-10-04').out, /git fetch/)
+  assert.doesNotMatch(commands('--since', '2026-10-04').out, /gh secret list/)
+})
+
+test('--commands --sample KEY shows what the key was made of', () => {
+  const { out } = commands('--sample', 'bash tools/x.sh')
+  assert.match(out, /bash tools\/x\.sh: 3 time\(s\), classified judge/)
+  assert.match(out, /bash tools\/x\.sh --a/)
+})
+
+test('--commands reads only: it writes no metrics and no settings', () => {
+  commands('--record')
+  assert.equal(existsSync(join(root, 'never.tsv')), false)
+  assert.deepEqual(JSON.parse(readFileSync(join(cwork, '.claude', 'settings.json'), 'utf8')).permissions.allow.length, 3)
+})
+
+test('--commands usage errors', () => {
+  assert.equal(commands('--top', '0').code, 64)
+  assert.equal(commands('--min', 'x').code, 64)
+  const r = spawnSync(process.execPath, [SCRIPT, '--commands', '--dir', join(root, 'nope')], { encoding: 'utf8' })
+  assert.equal(r.status, 2)
+})
