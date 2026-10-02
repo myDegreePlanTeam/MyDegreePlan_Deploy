@@ -97,6 +97,31 @@ test('--check-log reports a recurrence only for entries written after the FIXED 
   assert.doesNotMatch(out, /unrelated/)
 })
 
+test('a recurrence that a later FIXED line also matches is handled, not reported again', () => {
+  const log2 = join(root, 'log2.md')
+  writeFileSync(log2, [
+    '# Retro log',
+    '2026-10-01 | t | repeated-step | wrote throwaway edit scripts | 2 turns | script: x | new',
+    'FIXED | 2026-10-02 | match: throwaway edit | tools/a',
+    '2026-10-03 | t | repeated-step | throwaway edit scripts again, in a slow chain | 1 turn | script: y | REPEAT (first seen 2026-10-01)',
+    'FIXED | 2026-10-03 | match: slow chain | tools/b',
+    '2026-10-04 | t | near-miss | a different thing entirely | 1 turn | test: z | new',
+    '2026-10-05 | t | repeated-step | throwaway edit scripts a third time | 1 turn | script: y | REPEAT (first seen 2026-10-01)',
+    '',
+  ].join('\n'))
+  const r = spawnSync(process.execPath, [SCRIPT, '--dir', dir, '--log', log2, '--metrics', metrics, '--repos', 'none', '--check-log'], { encoding: 'utf8' })
+  assert.match(r.stdout, /fixed marker: 2 fixed, 1 recurrence\(s\) to look at \(1 already handled by a later FIXED\)/)
+  assert.match(r.stdout, /RECURRED line 7: .*a third time/)
+  assert.doesNotMatch(r.stdout, /RECURRED line 4/) // handled by the later FIXED line 5
+  assert.doesNotMatch(r.stdout, /RECURRED line 2/) // before the FIXED line
+})
+
+test('a FIXED line written before the recurrence does not hide it', () => {
+  const { out } = audit('--check-log')
+  assert.match(out, /RECURRED line 4: .*throwaway edit scripts again/)
+  assert.doesNotMatch(out, /already handled/)
+})
+
 test('a bad regex in a FIXED line is reported, not a crash', () => {
   const { code, out } = audit('--check-log')
   assert.equal(code, 0)
