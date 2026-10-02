@@ -23,6 +23,6 @@ jobs:
         working-directory: release-tools
         run: npm ci && npm test
       - name: Launcher scripts parse
-        run: sh -n mdp.sh
+        run: sh -n mdp.sh && bash -n release-tools/preflight.sh
       - name: Updater image builds
         run: docker build -t mdp-updater-ci updater
