@@ -211,3 +211,95 @@ test('hook protocol: the allow marker lets a deliberate doubled backslash throug
   const r = hook({ tool_name: 'Bash', tool_input: { command: lines('# guard_bash: allow', "python3 - <<'EOF'", `x = '${DOUBLE}n'`, 'EOF') } })
   assert.deepEqual([r.code, r.out, r.err], [0, '', ''])
 })
+
+// ---- 5. relative paths that belong to another directory ----------------------------------------------------------------------
+// A fake workspace: ROOT/{Frontend,Prototype}/.git, Frontend/src/lib/x.js, Prototype/degree-specs/build.mjs, ROOT/tools/run.sh
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { cwdProblems } from './guard_bash.mjs'
+
+const WS = mkdtempSync(join(tmpdir(), 'guard-ws-'))
+const FE = join(WS, 'Frontend')
+const PR = join(WS, 'Prototype')
+for (const d of [join(FE, '.git'), join(FE, 'src', 'lib'), join(PR, '.git'), join(PR, 'degree-specs'), join(WS, 'tools'), join(WS, 'plain')]) mkdirSync(d, { recursive: true })
+writeFileSync(join(FE, 'src', 'lib', 'x.js'), '')
+writeFileSync(join(PR, 'degree-specs', 'build.mjs'), '')
+writeFileSync(join(WS, 'tools', 'run.sh'), '')
+const inCwd = (cmd, cwd) => inspect(cmd, { cwd, root: WS })
+const cwdBlocked = (cmd, cwd, re) => {
+  const p = inCwd(cmd, cwd)
+  assert.ok(p.length > 0, `expected a block for ${cmd} in ${cwd}`)
+  if (re) assert.match(p.join('\n'), re)
+}
+const cwdOk = (cmd, cwd) => assert.deepEqual(inCwd(cmd, cwd), [], `expected no block for ${cmd} in ${cwd}`)
+
+test('cwd: a path that exists under a repo folder but not here is blocked, and the message names where it is', () => {
+  cwdBlocked('node degree-specs/build.mjs', WS, /degree-specs\/build\.mjs.*exists under .*Prototype/)
+  cwdBlocked('sed -n 1,5p src/lib/x.js', WS, /src\/lib\/x\.js.*Frontend/)
+  cwdBlocked('bash tools/run.sh', FE, /tools\/run\.sh.*exists under .*Frontend|exists under .*ws-/)
+})
+
+test('cwd: the same commands are fine in the directory they were written for', () => {
+  cwdOk('node degree-specs/build.mjs', PR)
+  cwdOk('sed -n 1,5p src/lib/x.js', FE)
+  cwdOk('bash tools/run.sh', WS)
+  cwdOk('node ./degree-specs/build.mjs', PR)
+})
+
+test('cwd: a command that chooses its own directory is left alone', () => {
+  cwdOk('cd Prototype && node degree-specs/build.mjs', WS)
+  cwdOk('git -C Prototype log -- degree-specs/build.mjs', WS)
+  cwdOk('npm --prefix Frontend run lint src/lib/x.js', WS)
+})
+
+test('cwd: a path that exists nowhere is not flagged (the command may create it), nor are flags, urls, absolute paths or branch names', () => {
+  cwdOk('mkdir -p src/new/dir && touch src/new/dir/a.js', WS)
+  cwdOk('git checkout -b feat/retro-repeats', FE)
+  cwdOk('git diff origin/main..HEAD', FE)
+  cwdOk('curl https://example.com/src/lib/x.js', WS)
+  cwdOk('cat /c/other/src/lib/x.js ~/src/lib/x.js $HOME/src/lib/x.js', WS)
+  cwdOk('node build.mjs --out=src/lib/x.js', WS)
+  cwdOk('sed -i s/a/b/ notes.txt', WS)
+})
+
+test('cwd: a bare word is never a path (src, docs and catalog are as often prose as folders), and a redirect target is a file about to be written', () => {
+  cwdOk('grep -rn foo src', WS)
+  cwdOk('npm run src', WS)
+  cwdOk('git log --oneline', WS)
+  cwdOk('cat > src/lib/x.js', WS)
+  cwdOk('echo hi >> degree-specs/build.mjs', WS)
+  cwdOk('git commit -m "fix src/lib/x.js and degree-specs/build.mjs"', WS)
+  cwdOk("node -e 'console.log(1) // src/lib/x.js'", WS)
+})
+
+test('cwd: heredoc bodies and quoted text are not scanned as commands, but quoted paths still count as arguments', () => {
+  cwdOk(lines("cat > note.md <<'EOF'", 'see src/lib/x.js and degree-specs/build.mjs', 'EOF'), WS)
+  cwdBlocked('node "degree-specs/build.mjs"', WS, /degree-specs\/build\.mjs/)
+})
+
+test('cwd: globs are cut at the wildcard, and at most three paths are reported', () => {
+  cwdBlocked('ls src/lib/*.js', WS, /src\/lib/)
+  const many = cwdProblems('a src/lib/x.js degree-specs/build.mjs tools/run.sh src', PR, WS)
+  assert.ok(many.length <= 3)
+})
+
+test('cwd: no cwd in the hook input means no check, and the allow marker opts out', () => {
+  assert.deepEqual(inspect('node degree-specs/build.mjs'), [])
+  assert.deepEqual(inCwd(lines('# guard_bash: allow', 'node degree-specs/build.mjs'), WS), [])
+})
+
+test('hook protocol: a path written for another directory blocks with exit 2 and the fix on stderr', () => {
+  const run = cwd => {
+    const r = spawnSync(process.execPath, [SCRIPT], { input: JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command: 'node degree-specs/build.mjs' } }), encoding: 'utf8', env: { ...process.env, GUARD_BASH_ROOT: WS } })
+    return { code: r.status, out: r.stdout, err: r.stderr }
+  }
+  const bad = run(WS)
+  assert.equal(bad.code, 2)
+  assert.match(bad.err, /working directory/)
+  assert.match(bad.err, /cd <that folder>/)
+  assert.deepEqual([run(PR).code, run(PR).err], [0, ''])
+  const noCwd = hook({ tool_name: 'Bash', tool_input: { command: 'node degree-specs/build.mjs' } })
+  assert.equal(noCwd.code, 0)
+})
+
+test('cwd: cleanup of the fake workspace', () => { rmSync(WS, { recursive: true, force: true }) })
