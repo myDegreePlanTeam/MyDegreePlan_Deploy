@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { advise, inspect } from './guard_bash.mjs'
+import { backslashProblems, inspect } from './guard_bash.mjs'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'guard_bash.mjs')
 const lines = (...l) => l.join('\n')
@@ -134,38 +134,34 @@ test('a Windows (CRLF) command is judged like a Unix one', () => {
   allowed("python3 - <<'EOF'\r\nprint(1)\r\nEOF")
 })
 
-// Advice about a doubled backslash. Built from a character code on purpose: typed in a Bash command a doubled backslash can
-// arrive as one, which is the thing under test.
+// A doubled backslash in a python or node script is blocked. Built from a character code on purpose: typed in a Bash command a
+// doubled backslash can arrive as one, which is the thing under test.
 const BS = String.fromCharCode(92)
 const DOUBLE = BS + BS
-const noted = (cmd, re) => {
-  const n = advise(cmd)
-  assert.ok(n.length > 0, `expected advice for:\n${cmd}`)
-  if (re) assert.match(n.join('\n'), re)
-}
-const quiet = cmd => assert.deepEqual(advise(cmd), [], `expected no advice for:\n${cmd}`)
+const noted = (cmd, re) => blocked(cmd, re)
+const quiet = cmd => allowed(cmd)
 
-test('advises on the exact incident: a python heredoc whose string holds a doubled backslash before n', () => {
+test('blocks the exact incident: a python heredoc whose string holds a doubled backslash before n', () => {
   noted(lines("python - <<'EOF'", `s = "appendFileSync(process.env.ORDER, 'courses${DOUBLE}n')"`, 'EOF'), /python script.*reaches the shell as ONE/)
 })
 
-test('advises on python escapes that change meaning, and not on ones that survive as written', () => {
+test('blocks python escapes that change meaning, and not ones that survive as written', () => {
   for (const ch of ['n', 'r', 't', 'b', 'f', 'v', '0', 'x', 'u', "'", '"']) noted(lines("python3 - <<'EOF'", `x = 'a${DOUBLE}${ch}b'`, 'EOF'))
   for (const ch of ['d', 's', 'w', '.', '(', '[', '|']) quiet(lines("python3 - <<'EOF'", `x = r'a${DOUBLE}${ch}b'`, 'EOF')) // python keeps these backslashes anyway
 })
 
-test('advises on node, where a lost backslash drops the escape: any letter, digit or quote', () => {
+test('blocks node, where a lost backslash drops the escape: any letter, digit or quote', () => {
   for (const ch of ['d', 'w', 'n', '1', "'"]) noted(lines("node - <<'EOF'", `const re = '${DOUBLE}${ch}+'`, 'EOF'), /node script/)
   quiet(lines("node - <<'EOF'", `const re = '${DOUBLE}.'`, 'EOF'))
 })
 
-test('advises on an inline python -c or node -e program', () => {
+test('blocks an inline python -c or node -e program', () => {
   noted(`python3 -c "print('a${DOUBLE}nb')"`, /python script/)
   noted(`cd /w && node -e "console.log('${DOUBLE}d')"`, /node script/)
   noted(`python -u -c "print('${DOUBLE}t')"`, /python script/)
 })
 
-test('a single backslash, or none, gets no advice', () => {
+test('a single backslash, or none, is allowed', () => {
   quiet(lines("python3 - <<'EOF'", `x = 'a${BS}nb'`, `y = r'${BS}d+'`, 'EOF'))
   quiet(lines("node - <<'EOF'", `const re = /${BS}d+/`, 'EOF'))
   quiet('git status --short')
@@ -177,29 +173,41 @@ test('only python and node source is read: a doubled backslash in a plain heredo
   quiet(lines("python3 - <<'EOF'", 'print(1)', 'EOF', `echo "a${DOUBLE}nb"`)) // after the heredoc closed
 })
 
-test('advice reads the body of the interpreter heredoc, not of an earlier plain one', () => {
+test('the check reads the body of the interpreter heredoc, not of an earlier plain one', () => {
   quiet(lines("cat > a.txt <<'EOF'", `x ${DOUBLE}n`, 'EOF', "python3 - <<'EOF'", 'print(1)', 'EOF'))
   noted(lines("cat > a.txt <<'EOF'", 'x', 'EOF', "python3 - <<'EOF'", `print('${DOUBLE}n')`, 'EOF'))
 })
 
-test('the allow marker silences advice too, and advice is capped at three notes', () => {
+test('the allow marker silences the backslash block too, and it reports at most three', () => {
   quiet(lines('# guard_bash: allow', "python3 - <<'EOF'", `x = '${DOUBLE}n'`, 'EOF'))
   const many = lines(...Array.from({ length: 6 }, (_, i) => `python3 - <<'E${i}'\nx = '${DOUBLE}n'\nE${i}`))
-  assert.equal(advise(many).length, 3)
+  assert.equal(backslashProblems(many).length, 3)
 })
 
-test('hook protocol: advice goes out as additionalContext on stdout with exit 0 (the command still runs)', () => {
+test('hook protocol: a doubled backslash blocks with exit 2 and the fix on stderr', () => {
   const r = hook({ tool_name: 'Bash', tool_input: { command: lines("python3 - <<'EOF'", `print('a${DOUBLE}nb')`, 'EOF') } })
-  assert.equal(r.code, 0)
-  const o = JSON.parse(r.out)
-  assert.equal(o.hookSpecificOutput.hookEventName, 'PreToolUse')
-  assert.match(o.hookSpecificOutput.additionalContext, /advice, the command was not blocked/)
-  assert.match(o.hookSpecificOutput.additionalContext, /Write tool/)
-  assert.equal(r.err, '')
+  assert.equal(r.code, 2)
+  assert.match(r.err, /guard_bash: blocked before running/)
+  assert.match(r.err, /reaches the shell as ONE/)
+  assert.match(r.err, /Write tool/)
+  assert.ok(r.err.includes('chr(92)'))
+  assert.equal(r.out, '')
 })
 
-test('hook protocol: a block wins over advice (exit 2, nothing on stdout)', () => {
+test('hook protocol: a node script is pointed at String.fromCharCode(92)', () => {
+  const r = hook({ tool_name: 'Bash', tool_input: { command: lines("node - <<'EOF'", `const re = '${DOUBLE}d+'`, 'EOF') } })
+  assert.equal(r.code, 2)
+  assert.ok(r.err.includes('String.fromCharCode(92)'))
+})
+
+test('hook protocol: a hang and a doubled backslash are both reported', () => {
   const r = hook({ tool_name: 'Bash', tool_input: { command: lines("python3 - <<'EOF'", `x = '${DOUBLE}n'`, 'EOF', "python3 - <<'EOF'", 'EOF') } })
   assert.equal(r.code, 2)
-  assert.equal(r.out, '')
+  assert.match(r.err, /empty body/)
+  assert.match(r.err, /doubled backslash/)
+})
+
+test('hook protocol: the allow marker lets a deliberate doubled backslash through', () => {
+  const r = hook({ tool_name: 'Bash', tool_input: { command: lines('# guard_bash: allow', "python3 - <<'EOF'", `x = '${DOUBLE}n'`, 'EOF') } })
+  assert.deepEqual([r.code, r.out, r.err], [0, '', ''])
 })
