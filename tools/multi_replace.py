@@ -40,6 +40,16 @@ Block format (no escaping; good with a quoted heredoc)
   `@@@` line (the line break before it is not part of the text; an empty `new` deletes). `@@@ old xN` expects N matches,
   `@@@ old xall` replaces however many there are (at least one).
 
+  To delete a long stretch without retyping it, name where it starts and where it stops:
+
+    @@@ cut
+    // Semester completion toggle
+    @@@ until
+    // Global collapse / expand control
+
+  removes everything from the start of the first text up to, but not including, the second. Each text must match exactly
+  once, the second after the first (and not overlapping it). In the JSON format: {"old": "...", "until": "..."}.
+
 JSON format (a file whose first character is { or [)
 
     {"files": [{"path": "a.js", "edits": [{"old": "x", "new": "y"}, {"old": "z", "new": "w", "count": 2}]}]}
@@ -67,6 +77,7 @@ class Edit:
     new: str
     count: object = 1  # int, or "all"
     where: str = ""
+    until: object = None  # a cut edit: the text where the removed stretch ends (it is kept)
 
 
 @dataclass
@@ -91,12 +102,17 @@ def parse_json(text: str) -> list:
             raise SpecError(f'file #{i}: needs "path" and a list "edits"')
         fe = FileEdits(f["path"])
         for j, e in enumerate(f["edits"], 1):
-            if not isinstance(e, dict) or not isinstance(e.get("old"), str) or not isinstance(e.get("new"), str):
-                raise SpecError(f'{f["path"]} edit #{j}: needs string "old" and "new"')
+            is_cut = isinstance(e, dict) and "until" in e
+            if not isinstance(e, dict) or not isinstance(e.get("old"), str) or not (
+                    isinstance(e.get("until"), str) if is_cut else isinstance(e.get("new"), str)):
+                raise SpecError(f'{f["path"]} edit #{j}: needs string "old" and "new" (or "old" and "until" for a cut)')
             count = e.get("count", 1)
             if count != "all" and not (isinstance(count, int) and count >= 1):
                 raise SpecError(f'{f["path"]} edit #{j}: count must be a positive integer or "all"')
-            fe.edits.append(Edit(e["old"], e["new"], count, f'{f["path"]} edit #{j}'))
+            if is_cut and count != 1:
+                raise SpecError(f'{f["path"]} edit #{j}: a cut matches each of its two texts exactly once; no count')
+            fe.edits.append(Edit(e["old"], "" if is_cut else e["new"], count, f'{f["path"]} edit #{j}',
+                                 e["until"] if is_cut else None))
         out.append(fe)
     return out
 
@@ -137,6 +153,21 @@ def parse_blocks(text: str) -> list:
             cur_file = FileEdits(rest)
             out.append(cur_file)
             cur_edit, target = None, None
+        elif directive == "cut":
+            if cur_file is None:
+                raise SpecError(f"line {n}: '@@@ cut' before any '@@@ file'")
+            if rest:
+                raise SpecError(f"line {n}: '@@@ cut' takes nothing after it (it matches once)")
+            check_edit_complete(cur_edit, n)
+            cur_edit = Edit("", "", 1, f"{cur_file.path} edit #{len(cur_file.edits) + 1} (line {n})", until="")
+            cur_file.edits.append(cur_edit)
+            cur_edit._saw_new = False  # type: ignore[attr-defined]
+            target = "old"
+        elif directive == "until":
+            if cur_edit is None or target != "old" or cur_edit.until is None:
+                raise SpecError(f"line {n}: '@@@ until' must follow an '@@@ cut'")
+            cur_edit._saw_new = True  # type: ignore[attr-defined]
+            target = "until"
         elif directive == "old":
             if cur_file is None:
                 raise SpecError(f"line {n}: '@@@ old' before any '@@@ file'")
@@ -154,7 +185,7 @@ def parse_blocks(text: str) -> list:
             cur_edit._saw_new = False  # type: ignore[attr-defined]
             target = "old"
         elif directive == "new":
-            if cur_edit is None or target != "old":
+            if cur_edit is None or target != "old" or cur_edit.until is not None:
                 raise SpecError(f"line {n}: '@@@ new' must follow an '@@@ old'")
             cur_edit._saw_new = True  # type: ignore[attr-defined]
             target = "new"
@@ -167,6 +198,8 @@ def parse_blocks(text: str) -> list:
 
 def check_edit_complete(edit, lineno):
     if edit is not None and not getattr(edit, "_saw_new", True):
+        if edit.until is not None:
+            raise SpecError(f"{edit.where}: no '@@@ until' after its '@@@ cut' (before line {lineno})")
         raise SpecError(f"{edit.where}: no '@@@ new' after its '@@@ old' (before line {lineno})")
 
 
@@ -204,7 +237,7 @@ def apply_to_text(raw: str, edits: list, path: str, problems: list):
     text = body.replace("\r\n", "\n") if crlf else body
     ok = True
     for e in edits:
-        for side, value in (("old", e.old), ("new", e.new)):
+        for side, value in (("old", e.old), ("new", e.new), ("until", e.until or "")):
             bad = control_chars(value)
             if bad:
                 problems.append(f"{e.where}: '{side}' contains control character(s) {', '.join(bad)}. "
@@ -212,6 +245,21 @@ def apply_to_text(raw: str, edits: list, path: str, problems: list):
                 ok = False
         if not e.old:
             problems.append(f"{e.where}: 'old' is empty")
+            ok = False
+            continue
+        if e.until is not None:
+            start, stop = text.count(e.old), text.count(e.until)
+            if not e.until:
+                problems.append(f"{e.where}: 'until' is empty")
+            elif start != 1 or stop != 1:
+                problems.append(f"{e.where}: a cut needs each text to match exactly once; the start matched {start} time(s) "
+                                f"({preview(e.old)}), the end {stop} ({preview(e.until)})")
+            elif text.index(e.until) < text.index(e.old) + len(e.old):
+                problems.append(f"{e.where}: the 'until' text must come after the 'cut' text and not overlap it")
+            else:
+                if ok:
+                    text = text[:text.index(e.old)] + text[text.index(e.until):]
+                continue
             ok = False
             continue
         if e.old == e.new:
