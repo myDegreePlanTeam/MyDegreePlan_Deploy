@@ -31,7 +31,7 @@ function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 # Docker Desktop's usual install locations. MDP_DOCKER_DESKTOP overrides (used by the tests).
 function Find-DockerDesktop {
     if ($env:MDP_DOCKER_DESKTOP) { return $env:MDP_DOCKER_DESKTOP }
-    foreach ($p in @("$env:ProgramFilesDockerDockerDocker Desktop.exe", "$env:LOCALAPPDATAProgramsDockerDockerDocker Desktop.exe")) {
+    foreach ($p in @("$env:ProgramFiles\Docker\Docker\Docker Desktop.exe", "$env:LOCALAPPDATA\Programs\Docker\Docker\Docker Desktop.exe")) {
         if ($p -and (Test-Path $p)) { return $p }
     }
     return $null
