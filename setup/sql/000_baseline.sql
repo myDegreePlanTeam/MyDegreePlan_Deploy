@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS test_equivalencies (
   satisfies_pool      TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- option_key: an exam whose credit is one of several courses ("PHYS 2010 or 2110") marks each alternative's rows with a
+-- key; the rows of one exam sharing a key are one choice (test_equivalencies.sql, "AP: credit that is one of several courses").
+ALTER TABLE test_equivalencies ADD COLUMN IF NOT EXISTS option_key TEXT;
 -- Final list after tiers 9, 10, 13.
 ALTER TABLE test_equivalencies DROP CONSTRAINT IF EXISTS test_equivalencies_test_type_check;
 ALTER TABLE test_equivalencies ADD CONSTRAINT test_equivalencies_test_type_check
