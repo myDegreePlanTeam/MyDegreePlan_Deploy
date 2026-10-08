@@ -192,6 +192,64 @@ class Refusing(Case):
             self.run_blocks(f"@@@ file {p}\n@@@ old\nx\n@@@ new\ny\n")
 
 
+class Cutting(Case):
+    BODY = b"top\nSTART one\nmiddle a\nmiddle b\nEND two\nbottom\n"
+
+    def test_cut_removes_from_the_start_text_up_to_the_end_text(self):
+        p = self.put("a.js", self.BODY)
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ cut\nSTART one\n@@@ until\nEND two\n"), 0)
+        self.assertEqual(self.get(p), b"top\nEND two\nbottom\n")
+
+    def test_crlf_is_kept(self):
+        p = self.put("a.js", self.BODY.replace(b"\n", b"\r\n"))
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ cut\nSTART one\n@@@ until\nEND two\n"), 0)
+        self.assertEqual(self.get(p), b"top\r\nEND two\r\nbottom\r\n")
+
+    def test_a_cut_and_an_ordinary_edit_apply_in_order(self):
+        p = self.put("a.js", self.BODY)
+        spec = f"@@@ file {p}\n@@@ cut\nSTART one\n@@@ until\nEND two\n@@@ old\nEND two\n@@@ new\nKEPT\n"
+        self.assertEqual(self.run_blocks(spec), 0)
+        self.assertEqual(self.get(p), b"top\nKEPT\nbottom\n")
+
+    def test_the_json_format_has_cut_too(self):
+        p = self.put("a.js", self.BODY)
+        self.assertEqual(self.run_json({"files": [{"path": p, "edits": [{"old": "START one", "until": "END two"}]}]}), 0)
+        self.assertEqual(self.get(p), b"top\nEND two\nbottom\n")
+
+    def test_each_text_must_match_exactly_once(self):
+        p = self.put("a.js", b"x\nSTART\nSTART\nEND\n")
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ cut\nSTART\n@@@ until\nEND\n"), 1)
+        self.assertIn("start matched 2", " ".join(self.log))
+        q = self.put("b.js", b"START\nstuff\n")
+        self.assertEqual(self.run_blocks(f"@@@ file {q}\n@@@ cut\nSTART\n@@@ until\nEND\n"), 1)
+        self.assertEqual(self.get(q), b"START\nstuff\n")   # nothing written
+
+    def test_the_end_must_come_after_the_start_and_not_overlap_it(self):
+        p = self.put("a.js", self.BODY)
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ cut\nEND two\n@@@ until\nSTART one\n"), 1)
+        self.assertEqual(self.run_blocks(f"@@@ file {p}\n@@@ cut\nSTART one\nmiddle a\n@@@ until\nmiddle a\n"), 1)
+        self.assertEqual(self.get(p), self.BODY)
+
+    def test_a_cut_that_fails_stops_every_other_file_too(self):
+        good = self.put("good.js", b"a\nb\n")
+        bad = self.put("bad.js", b"START\n")
+        spec = f"@@@ file {good}\n@@@ old\na\n@@@ new\nz\n@@@ file {bad}\n@@@ cut\nSTART\n@@@ until\nEND\n"
+        self.assertEqual(self.run_blocks(spec), 1)
+        self.assertEqual(self.get(good), b"a\nb\n")
+
+    def test_spec_errors(self):
+        p = self.put("a.js", self.BODY)
+        for spec, message in [
+            (f"@@@ file {p}\n@@@ cut\nSTART one\n", "no '@@@ until'"),
+            (f"@@@ file {p}\n@@@ cut\nSTART one\n@@@ new\nx\n", "'@@@ new' must follow an '@@@ old'"),
+            (f"@@@ file {p}\n@@@ old\nSTART one\n@@@ until\nEND two\n", "'@@@ until' must follow an '@@@ cut'"),
+            (f"@@@ file {p}\n@@@ cut x2\nSTART one\n@@@ until\nEND two\n", "takes nothing after it"),
+        ]:
+            with self.assertRaises(mr.SpecError) as ctx:
+                mr.run(spec, False, out=self.log.append)
+            self.assertIn(message, str(ctx.exception))
+
+
 class Parsing(Case):
     def test_json_format_with_counts(self):
         p = self.put("a.txt", b"x\nx\nq\n")
