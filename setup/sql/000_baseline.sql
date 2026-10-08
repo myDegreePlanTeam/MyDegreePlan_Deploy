@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS test_equivalencies (
 -- option_key: an exam whose credit is one of several courses ("PHYS 2010 or 2110") marks each alternative's rows with a
 -- key; the rows of one exam sharing a key are one choice (test_equivalencies.sql, "AP: credit that is one of several courses").
 ALTER TABLE test_equivalencies ADD COLUMN IF NOT EXISTS option_key TEXT;
+-- superseded_at: a row that a higher score replaces (Calculus AB: a 3 earns MATH 1830, a 4 earns MATH 1910 instead) applies
+-- when min_score <= score < superseded_at; NULL means it applies from min_score upward.
+ALTER TABLE test_equivalencies ADD COLUMN IF NOT EXISTS superseded_at INTEGER;
 -- Final list after tiers 9, 10, 13.
 ALTER TABLE test_equivalencies DROP CONSTRAINT IF EXISTS test_equivalencies_test_type_check;
 ALTER TABLE test_equivalencies ADD CONSTRAINT test_equivalencies_test_type_check
