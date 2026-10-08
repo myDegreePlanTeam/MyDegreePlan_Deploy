@@ -16,6 +16,9 @@
 //   3. A bare interpreter with no program: `python`, `python3`, `py`, `node` (alone, or with only flags such as -u that keep
 //      the prompt open), or `python -` / `node -` with no pipe or redirect feeding it. Each starts a REPL that waits for a
 //      console that is not there. `node -v`, `python3 -V`, `--version` and `-h` print and exit, and are allowed.
+//   3b. `cat` with no file, no heredoc, no input redirect and nothing piped into it, with or without an output redirect
+//      (`cat > /tmp/x`, a bare `cat`): it waits on stdin until the timeout (retro 2026-10-08; the same class as 1 and 3).
+//      `cat > f <<'EOF'`, `cat file`, `cat < f` and `x | cat` are fine.
 // To run something deliberately anyway (a repro of the hang under `timeout`), put `# guard_bash: allow` in the command.
 // Heredoc BODIES are never scanned for commands: a script that merely contains the text `python3 -` is fine.
 //
@@ -80,12 +83,16 @@ export function inspect(command, opts = {}) {
   const parts = code.join('\n').split(/(&&|\|\||;|\n|\|)/) // [segment, separator, segment, ...]
   const bare = new RegExp(`^(?:[A-Za-z_]\\w*=\\S*\\s+)*${INTERPRETERS}${PROMPT_FLAGS}$`)
   const dash = new RegExp(`^(?:[A-Za-z_]\\w*=\\S*\\s+)*${INTERPRETERS}${PROMPT_FLAGS}\\s+-$`)
+  const catCommand = /^(?:[A-Za-z_]\w*=\S*\s+)*cat(?:\s+-[A-Za-z]+)*$/
   for (let k = 0; k < parts.length; k += 2) {
     const prevSep = k > 0 ? parts[k - 1] : ''
     const raw = parts[k].trim().replace(/^[({]\s*/, '').replace(/\s*[)}]$/, '')
     const seg = raw.replace(/\s\d*>&?\S*/g, '').trim() // output redirections do not feed stdin
     if (bare.test(seg)) problems.push(`\`${raw}\` is an interpreter with no program: it starts an interactive prompt and waits for a console`)
     else if (dash.test(seg) && !raw.includes('<') && prevSep !== '|') problems.push(`\`${raw}\` reads its program from stdin but nothing is piped or redirected into it`)
+    // `cat > file` (or a bare `cat`) with no heredoc, no input redirect and nothing piped in waits on stdin until the timeout
+    const catArgs = raw.replace(/\d*>>?\s*&?\S+/g, '').trim() // drop > file, >> file, 2>/dev/null, 2>&1
+    if (catCommand.test(catArgs) && !raw.includes('<') && prevSep !== '|') problems.push(`\`${raw}\` is cat with no file: it reads stdin and nothing is piped or redirected into it (a heredoc or a file name is missing)`)
   }
   problems.push(...backslashProblems(command))
   if (opts.cwd) problems.push(...cwdProblems(code.join('\n'), opts.cwd, opts.root ?? DEFAULT_ROOT))

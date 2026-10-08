@@ -44,6 +44,18 @@ test('blocks a bare interpreter, with or without flags, anywhere in a command', 
   for (const c of ['python', 'python3', 'py', 'node', 'python3 -u', 'cd /w && python3', 'ls; python', 'FOO=1 python3', 'git status || node']) blocked(c, /no program/)
 })
 
+test('blocks cat with no file, no heredoc and nothing piped in (it waits on stdin), with or without an output redirect', () => {
+  for (const c of ['cat', 'cat > /tmp/dummy', 'cat > /tmp/dummy 2>/dev/null', 'cat >> out.txt', 'cat -n', 'cd /w && cat > f.txt', 'ls; cat', 'FOO=1 cat > f']) blocked(c, /cat with no file/)
+  blocked('cat > /tmp/dummy 2>/dev/null; python3 tools/x.py', /cat with no file/) // the call that hung on 2026-10-08
+})
+
+test('allows cat when something feeds it or it names a file', () => {
+  for (const c of ['cat file.txt', 'cat a b > c', 'cat < in.txt', 'echo hi | cat', 'echo hi | cat > out.txt', 'cat -n file.txt', 'cat /dev/null > f', 'x=$(cat f)']) allowed(c)
+  allowed(lines("cat > f.txt <<'EOF'", 'body', 'EOF'))
+  allowed(lines('cat <<EOF', 'body', 'EOF'))
+  allowed(lines("cat > f <<'EOF'", 'cat', 'EOF')) // the word cat inside a heredoc body is text
+})
+
 test('blocks python - or node - with nothing piped or redirected into it', () => {
   blocked('python3 -', /reads its program from stdin/)
   blocked('cd /w && python -', /reads its program from stdin/)
@@ -266,7 +278,7 @@ test('cwd: a bare word is never a path (src, docs and catalog are as often prose
   cwdOk('grep -rn foo src', WS)
   cwdOk('npm run src', WS)
   cwdOk('git log --oneline', WS)
-  cwdOk('cat > src/lib/x.js', WS)
+  cwdOk('echo hi > src/lib/x.js', WS)
   cwdOk('echo hi >> degree-specs/build.mjs', WS)
   cwdOk('git commit -m "fix src/lib/x.js and degree-specs/build.mjs"', WS)
   cwdOk("node -e 'console.log(1) // src/lib/x.js'", WS)
