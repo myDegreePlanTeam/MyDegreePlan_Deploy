@@ -27,6 +27,14 @@ case "$1 $2" in
          cat "$FAKE_STATE_FILE" ;;
     esac ;;
   "release list") printf 'MyDegreePlan 0.6.1\tLatest\tv0.6.1\t2026-10-08T20:36:05Z\n' ;;
+  "run download")
+    [ -f "$FAKE_ROOT/no-artifact" ] && exit 1
+    dir=""; while [ $# -gt 0 ]; do [ "$1" = --dir ] && dir="$2"; shift; done
+    mkdir -p "$dir"
+    echo "PASS: no differences" > "$dir/report.txt"
+    seq 1 200 | sed 's/^/line /' > "$dir/big.log"
+    printf '\211PNG\r\n' > "$dir/shot.png"
+    ;;
 esac
 GH
 chmod +x "$ROOT/bin/gh"
@@ -36,7 +44,7 @@ steps() { # name=result ...
   : > "$ROOT/steps"
   for kv in "$@"; do printf '%s\t%s\n' "${kv%%=*}" "${kv#*=}" >> "$ROOT/steps"; done
 }
-run() { OUT="$(PATH="$ROOT/bin:$PATH" FAKE_LOG="$ROOT/log" FAKE_STATE_FILE="$ROOT/state" FAKE_STEPS_FILE="$ROOT/steps" RELEASE_STATUS_POLL=0 bash "$SCRIPT" "$@" 2>&1)"; CODE=$?; }
+run() { OUT="$(PATH="$ROOT/bin:$PATH" FAKE_ROOT="$ROOT" FAKE_LOG="$ROOT/log" FAKE_STATE_FILE="$ROOT/state" FAKE_STEPS_FILE="$ROOT/steps" RELEASE_STATUS_POLL=0 bash "$SCRIPT" "$@" 2>&1)"; CODE=$?; }
 : > "$ROOT/log"
 
 echo "published: Publish and Verify succeeded, the run still finishing its cleanup steps"
@@ -98,7 +106,51 @@ run --wait --timeout 0
 check "exits 2" '[ $CODE = 2 ]'
 check "says it timed out" 'echo "$OUT" | grep -q "timed out waiting"'
 
+echo "another repo and workflow: judged by the run and its jobs, no release line"
+: > "$ROOT/log"
+state completed success
+steps "parity (web, Windows app)=success" "docs=success"
+run --repo acme/frontend --workflow parity.yml
+check "exits 0" '[ $CODE = 0 ]'
+check "says passed" 'echo "$OUT" | grep -q "^passed"'
+check "names the repo and calls it a run, not a release" 'echo "$OUT" | grep -q "^parity.yml run 4242 in acme/frontend"'
+check "lists the jobs" 'echo "$OUT" | grep -q "parity (web, Windows app) *success"'
+check "prints no latest release" '! echo "$OUT" | grep -q "latest release"'
+check "asks for that workflow in that repo" 'grep -q "run list --repo acme/frontend --workflow parity.yml" "$ROOT/log"'
+check "does not look up the repository" '! grep -q "repo view" "$ROOT/log"'
+
+echo "another workflow still running: exit 2; one job failed: exit 1; completed red: exit 1"
+state in_progress ""; steps "parity=in_progress"
+run --repo acme/frontend --workflow parity.yml;       check "running is 2" '[ $CODE = 2 ]'
+state in_progress ""; steps "parity=failure"
+run --repo acme/frontend --workflow parity.yml;       check "a failed job is 1" '[ $CODE = 1 ]'
+state completed failure; steps "parity=success"
+run --repo acme/frontend --workflow parity.yml;       check "a red run is 1" '[ $CODE = 1 ]'
+
+echo "--branch: the latest run on that branch"
+: > "$ROOT/log"; state completed success; steps "parity=success"
+run --repo acme/deploy --workflow parity.yml --branch fix/x
+check "run list is limited to the branch" 'grep -q "run list .*--branch fix/x" "$ROOT/log"'
+
+echo "--artifact: prints the report of a finished run, and says so when the run is still going"
+state completed success; steps "parity=success"
+: > "$ROOT/log"; run --repo acme/deploy --workflow parity.yml --artifact parity-all-platforms
+check "downloads the named artifact" 'grep -q "run download 4242 --repo acme/deploy --name parity-all-platforms" "$ROOT/log"'
+check "prints the text report" 'echo "$OUT" | grep -q "^--- report.txt" && echo "$OUT" | grep -q "PASS: no differences"'
+check "cuts a long file at 80 lines" 'echo "$OUT" | grep -q "(200 lines, cut at 80)" && ! echo "$OUT" | grep -q "line 150"'
+check "names a binary file without printing it" 'echo "$OUT" | grep -q "shot.png (binary"'
+state in_progress ""; steps "parity=in_progress"
+: > "$ROOT/log"; run --repo acme/deploy --workflow parity.yml --artifact parity-all-platforms
+check "no download while running" '! grep -q "run download" "$ROOT/log" && echo "$OUT" | grep -q "run has not finished"'
+state completed success; steps "parity=success"; touch "$ROOT/no-artifact"
+run --repo acme/deploy --workflow parity.yml --artifact missing
+check "a missing artifact is a message, not a changed exit code" '[ $CODE = 0 ] && echo "$OUT" | grep -q "could not be downloaded"'
+rm -f "$ROOT/no-artifact"
+
 echo "usage errors"
+run --repo;             check "--repo without a value is 64" '[ $CODE = 64 ]'
+run --repo nonsense;    check "a --repo without a slash is 64" '[ $CODE = 64 ]'
+run abc;                check "a run id that is not a number is 64" '[ $CODE = 64 ]'
 run --bogus;            check "an unknown flag is 64" '[ $CODE = 64 ]'
 run --timeout;          check "--timeout without a number is 64" '[ $CODE = 64 ]'
 run --timeout abc;      check "a non-numeric timeout is 64" '[ $CODE = 64 ]'

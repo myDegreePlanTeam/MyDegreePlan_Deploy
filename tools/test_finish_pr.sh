@@ -28,6 +28,7 @@ echo "gh $*" >> "$FAKE_LOG"
 case "$1 $2" in
   "repo view") echo "acme/repo" ;;
   "pr view") echo "$FAKE_PR" ;;
+  "pr list") echo "${FAKE_PR_LIST-7}" ;;
   "pr checks") echo "$FAKE_CHECKS_OUT"; exit "${FAKE_CHECKS_CODE:-0}" ;;
   "pr merge")
     [ "${FAKE_MERGE_CODE:-0}" = 0 ] || { echo "merge failed"; exit 1; }
@@ -106,6 +107,24 @@ check "branch kept and the reason printed" 'branch_exists && echo "$OUT" | grep 
 echo "--delete-remote removes origin/branch"
 world; finish Repo 7 --delete-remote
 check "origin has no feat/x" '! git --git-dir="$T/origin.git" show-ref --verify --quiet refs/heads/feat/x'
+
+echo "no PR number: the PR of the branch the repo is on"
+world; finish Repo
+check "exits 0 and merges PR 7" '[ $CODE = 0 ] && origin_has_x && grep -q -- "pr merge 7 --repo acme/repo --squash" "$FAKE_LOG"'
+check "looks the PR up by the current branch" 'grep -q -- "pr list --repo acme/repo --head feat/x" "$FAKE_LOG"'
+check "says which PR it picked" 'echo "$OUT" | grep -q "no PR number given: using #7"'
+check "branch deleted as usual" '! branch_exists'
+world; (cd "$T/mdp/Repo" && git checkout -q main); finish Repo
+check "on main with no number: refuses, merges nothing" '[ $CODE = 1 ] && [ "$(merged_log)" = 0 ] && echo "$OUT" | grep -q "not on a PR branch"'
+world; export FAKE_PR_LIST=""; finish Repo
+check "a branch with no pull request: refuses, merges nothing" '[ $CODE = 1 ] && [ "$(merged_log)" = 0 ] && echo "$OUT" | grep -q "no pull request has the head branch feat/x"'
+unset FAKE_PR_LIST
+
+echo "a number given while the repo is on another branch: merges as asked but says so"
+world; (cd "$T/mdp/Repo" && git checkout -q main); finish Repo 7
+check "note names both branches" 'echo "$OUT" | grep -q "note: Repo is on .main., not on this PR.s branch feat/x"'
+world; finish Repo 7
+check "no note when the branch matches" '! echo "$OUT" | grep -q "^  note:"'
 
 echo "usage errors"
 world; finish
