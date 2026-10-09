@@ -23,9 +23,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.YAML_CHECK_ROOT ? resolve(process.env.YAML_CHECK_ROOT) : resolve(HERE, '..', '..')
 
 export function loadYaml(root = ROOT) {
-  const homes = ['local-deploy/release-tools', 'MyDegreePlan_Desktop', 'MyDegreePlan_Frontend', 'MyDegreePlan_Site']
-  for (const home of homes) {
-    const dir = join(root, home)
+  // release-tools is next to this folder in the Deploy repo itself (CI checks out only that repo), so it is found without the workspace
+  const homes = [join(HERE, '..', 'release-tools'), ...['MyDegreePlan_Desktop', 'MyDegreePlan_Frontend', 'MyDegreePlan_Site'].map(h => join(root, h))]
+  for (const dir of homes) {
     if (!existsSync(join(dir, 'node_modules', 'yaml'))) continue
     try { return createRequire(join(dir, 'package.json'))('yaml') } catch { /* try the next one */ }
   }
