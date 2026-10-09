@@ -13,7 +13,7 @@
 #   --wait       poll every 10 s until the run is done, fails, or the timeout (default 900 s). Run it in the background
 #                (run_in_background) or with a long tool timeout: a release takes about 4 to 5 minutes, a parity run about 8
 #
-# Release mode (workflow release.yml in the Deploy repo, the default): prints the run's status, the steps that matter (Assemble
+# Release mode (a release.yml run that has the Deploy repo's steps, the default there): prints the run's status, the steps that matter (Assemble
 # and sign, Publish, Verify what students will download, Notify the landing page) and the latest GitHub release. "Published"
 # means the Publish and Verify steps succeeded; the run keeps going for a minute or so after that (the "Post Run" cleanup
 # steps), which is not a reason to wait.
@@ -60,15 +60,22 @@ if [ -z "$RUN" ]; then
   [ -n "$RUN" ] || { echo "release_status: no run of $WORKFLOW found in $REPO${BRANCH:+ on $BRANCH}" >&2; exit 1; }
 fi
 
-# Release mode: the Deploy repo's release workflow, judged by its Publish and Verify steps. Everything else: judged by the run.
-RELEASE_MODE=0; [ "$WORKFLOW" = release.yml ] && RELEASE_MODE=1
+# Release mode: a run that has the Deploy Release workflow's steps (Assemble and sign, Publish, Verify ...), judged by its Publish and
+# Verify steps. The mode follows the steps, not the file name: the Desktop repo also calls its workflow release.yml, with other
+# step names, and was waited on forever (2026-10-09). Everything else, including a release run that has not reached those steps
+# yet, is judged by the run and its jobs.
+RELEASE_MODE=0
 KEY_STEPS='^(Assemble and sign the release|Publish|Verify what students will download|Notify the landing page)$'
 
 snapshot() {
   RUN_STATE="$(gh run view "$RUN" --repo "$REPO" --json status,conclusion,createdAt -q '[.status, (.conclusion // ""), .createdAt] | @tsv' 2>/dev/null)"
-  if [ "$RELEASE_MODE" = 1 ]; then
+  STEPS=""; RELEASE_MODE=0
+  if [ "$WORKFLOW" = release.yml ]; then
     STEPS="$(gh run view "$RUN" --repo "$REPO" --json jobs -q ".jobs[].steps[] | select(.name | test(\"$KEY_STEPS\")) | [.name, (.conclusion // .status)] | @tsv" 2>/dev/null)"
-  else
+    # "Publish" alone is not enough: the Desktop repo's release.yml has a step of that name too (2026-10-09)
+    printf '%s\n' "$STEPS" | grep -qE '^(Assemble and sign the release|Verify what students will download)' && RELEASE_MODE=1
+  fi
+  if [ "$RELEASE_MODE" = 0 ]; then
     STEPS="$(gh run view "$RUN" --repo "$REPO" --json jobs -q '.jobs[] | [.name, (.conclusion // .status)] | @tsv' 2>/dev/null)"
   fi
 }
