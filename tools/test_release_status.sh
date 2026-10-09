@@ -22,6 +22,7 @@ case "$1 $2" in
   "run list") echo "${FAKE_LATEST:-4242}" ;;
   "run view")
     case "$*" in
+      *"select(.name"*) grep -E '^(Assemble and sign the release|Publish|Verify what students will download|Notify the landing page)	' "$FAKE_STEPS_FILE" ;;
       *"--json jobs"*) cat "$FAKE_STEPS_FILE" ;;
       *) if [ -n "${FAKE_ADVANCE:-}" ] && [ -f "$FAKE_ADVANCE" ]; then cp "$FAKE_ADVANCE" "$FAKE_STATE_FILE"; cp "$FAKE_ADVANCE.steps" "$FAKE_STEPS_FILE"; rm -f "$FAKE_ADVANCE"; fi
          cat "$FAKE_STATE_FILE" ;;
@@ -126,6 +127,24 @@ state in_progress ""; steps "parity=failure"
 run --repo acme/frontend --workflow parity.yml;       check "a failed job is 1" '[ $CODE = 1 ]'
 state completed failure; steps "parity=success"
 run --repo acme/frontend --workflow parity.yml;       check "a red run is 1" '[ $CODE = 1 ]'
+
+echo "release.yml in a repo whose steps are not the Deploy ones (the Desktop release): judged by the run, never waits for steps it does not have"
+state completed success
+steps "test=success" "Publish=success" "release=success"
+run --repo acme/desktop
+check "exits 0 and says passed" '[ $CODE = 0 ] && echo "$OUT" | grep -q "^passed"'
+check "is not called a release and has no latest release line" '! echo "$OUT" | grep -q "latest release" && echo "$OUT" | grep -q "^release.yml run 4242 in acme/desktop"'
+check "lists the jobs" 'echo "$OUT" | grep -q "release  *success"'
+state in_progress ""; steps "test=success" "release=in_progress"
+run --repo acme/desktop;  check "still running is 2" '[ $CODE = 2 ]'
+state completed failure; steps "test=success" "release=failure"
+run --repo acme/desktop;  check "failed is 1" '[ $CODE = 1 ]'
+
+echo "a Deploy release run that has not reached its release steps yet: exit 2, then release mode once it has"
+state in_progress ""; steps "test=in_progress"
+run;  check "waiting on the test job is 2" '[ $CODE = 2 ]'
+steps "test=success" "Assemble and sign the release=success" "Publish=success" "Verify what students will download=success"
+run;  check "release mode and published once the steps exist" '[ $CODE = 0 ] && echo "$OUT" | grep -q "published and verified"'
 
 echo "--branch: the latest run on that branch"
 : > "$ROOT/log"; state completed success; steps "parity=success"
