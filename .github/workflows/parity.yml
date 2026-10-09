@@ -1,0 +1,102 @@
+# Platform parity, all three platforms: builds the Docker install from the Frontend's current source, then drives the same student journey
+# through the real UI on web, the Windows app (Electron) and this Docker install, and fails when they differ in a way the Frontend's
+# parity/ registries do not allow. The runner and the registries live in the Frontend repo (parity/); this workflow exists because only
+# this repo has the compose file and the token for the private Prototype repo that the Docker build needs.
+#
+# What only the Docker leg can catch: the local (IndexedDB) and remote (Postgres) backends disagreeing. The plan each builds is compared
+# course for course, and so is every screen's text.
+#
+# Runs nightly, by hand, and when asked by another repo's workflow. Needs the SOURCES_TOKEN secret (read access to Frontend and Prototype).
+name: Platform parity
+
+on:
+  schedule:
+    - cron: '53 5 * * *'
+  workflow_dispatch:
+    inputs:
+      frontend_ref:
+        description: 'MyDegreePlan_Frontend branch, tag or SHA to build and test'
+        default: main
+      desktop_ref:
+        description: 'MyDegreePlan_Desktop branch, tag or SHA to test'
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # The layout the Docker build expects: three sibling folders under one build context (the compose file uses `..`).
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { path: mdp/local-deploy }
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Frontend
+          ref: ${{ inputs.frontend_ref || 'main' }}
+          token: ${{ secrets.SOURCES_TOKEN || github.token }}
+          path: mdp/MyDegreePlan_Frontend
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Prototype
+          token: ${{ secrets.SOURCES_TOKEN || github.token }}
+          path: mdp/MyDegreePlan_Prototype
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: myDegreePlanTeam/MyDegreePlan_Desktop
+          ref: ${{ inputs.desktop_ref || 'main' }}
+          path: mdp/MyDegreePlan_Desktop
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 22 }
+
+      - name: Build and start the Docker install from this source (as mdp start --build does)
+        working-directory: mdp/local-deploy
+        run: |
+          # mdp.sh opens a browser when it is done; there is none on a runner.
+          mkdir -p "$RUNNER_TEMP/shim"
+          printf '%s\n' '#!/bin/sh' 'exit 0' > "$RUNNER_TEMP/shim/open"
+          printf '%s\n' '#!/bin/sh' 'exit 0' > "$RUNNER_TEMP/shim/xdg-open"
+          chmod +x "$RUNNER_TEMP/shim/open" "$RUNNER_TEMP/shim/xdg-open"
+          PATH="$RUNNER_TEMP/shim:$PATH" sh mdp.sh start --build
+
+      - name: Build the Frontend for the web and desktop legs
+        working-directory: mdp/MyDegreePlan_Frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install the Windows app's Electron
+        working-directory: mdp/MyDegreePlan_Desktop
+        run: npm ci
+
+      - name: Install the parity tooling and a browser
+        working-directory: mdp/MyDegreePlan_Frontend/parity
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Drive the same journey on web, desktop and Docker, and compare
+        working-directory: mdp/MyDegreePlan_Frontend
+        env:
+          MDP_DESKTOP_DIR: ${{ github.workspace }}/mdp/MyDegreePlan_Desktop
+          MDP_DOCKER_URL: http://127.0.0.1:8080
+        run: xvfb-run -a node parity/run.mjs --targets web,desktop,docker
+
+      - name: Keep the fingerprints and the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-all-platforms
+          path: mdp/MyDegreePlan_Frontend/parity/out
+          if-no-files-found: ignore
+
+      - name: Container logs (on failure)
+        if: failure()
+        working-directory: mdp/local-deploy
+        run: docker compose logs --no-color --tail 100 || true
