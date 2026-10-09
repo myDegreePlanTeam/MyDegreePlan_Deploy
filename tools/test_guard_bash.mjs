@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backslashProblems, inspect } from './guard_bash.mjs'
+import { backslashProblems, inspect, liveProfileProblems } from './guard_bash.mjs'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'guard_bash.mjs')
 const lines = (...l) => l.join('\n')
@@ -315,3 +315,53 @@ test('hook protocol: a path written for another directory blocks with exit 2 and
 })
 
 test('cwd: cleanup of the fake workspace', () => { rmSync(WS, { recursive: true, force: true }) })
+
+// ---- 6. the live Windows-app profile ------------------------------------------------------------------------------------------
+const live = `${BS}MyDegreePlan`
+test('live profile: a delete that names the AppData MyDegreePlan folder is blocked, in every spelling the incident could take', () => {
+  for (const c of [
+    `Remove-Item -Recurse -Force "$env:APPDATA${live}"`,
+    `Remove-Item -Recurse -Force $env:appdata${live}${BS}IndexedDB`,
+    `rm -rf "$APPDATA/MyDegreePlan/Local Storage"`,
+    `rm -rf "\${APPDATA}/MyDegreePlan"`,
+    `rm -rf /c/Users/brady/AppData/Roaming/MyDegreePlan/CURRENT`,
+    `del /s /q %APPDATA%${live}`,
+    `cmd /c rd /s /q %appdata%${live}`,
+    `find "$APPDATA/MyDegreePlan" -name LOCK -delete`,
+    `node -e "require('fs').rmSync(process.env.APPDATA + '/MyDegreePlan', {recursive:true})" # AppData/Roaming/MyDegreePlan`,
+    `Get-ChildItem C:${BS}Users${BS}brady${BS}AppData${BS}Roaming${live} | Remove-Item`,
+  ]) {
+    assert.ok(liveProfileProblems(c).length > 0, `expected a block for: ${c}`)
+    assert.match(inspect(c).join('\n'), /live Windows-app profile/)
+  }
+})
+
+test('live profile: reading it, deleting something else, or a throwaway profile is fine', () => {
+  for (const c of [
+    `ls "$APPDATA/MyDegreePlan"`,
+    `Get-ChildItem $env:APPDATA${live}`,
+    `rm -rf "$TEMP/mdp-smoke-1234"`,
+    `Remove-Item -Recurse -Force "$env:TEMP${BS}mdp-userdata-99"`,
+    `electron . --user-data-dir="$TEMP/mdp-ud" && rm -rf "$TEMP/mdp-ud"`,
+    `rm -rf "$APPDATA/MyDegreePlan-test-123"`,
+    `rm -rf "$APPDATA/MyDegreePlanDev"`,
+    `npm run build`,
+  ]) assert.deepEqual(liveProfileProblems(c), [], `expected no block for: ${c}`)
+})
+
+test('live profile: only its own marker lifts the block; the generic allow marker does not', () => {
+  const del = 'rm -rf "$APPDATA/MyDegreePlan"'
+  assert.ok(inspect(`${del} # guard_bash: allow`).length > 0)
+  assert.deepEqual(inspect(`${del} # guard: delete-live-profile`), [])
+  assert.deepEqual(liveProfileProblems(`Remove-Item -Recurse "$env:APPDATA${live}" # guard: delete-live-profile`), [])
+})
+
+test('hook protocol: the PowerShell tool is checked for the live profile only; Bash-only rules do not apply to it', () => {
+  const del = `Remove-Item -Recurse -Force "$env:APPDATA${live}"`
+  const bad = hook({ tool_name: 'PowerShell', tool_input: { command: del } })
+  assert.equal(bad.code, 2)
+  assert.match(bad.err, /live Windows-app profile/)
+  assert.equal(hook({ tool_name: 'PowerShell', tool_input: { command: 'Get-ChildItem src/lib/x.js; node' } }).code, 0)
+  assert.equal(hook({ tool_name: 'Bash', tool_input: { command: 'rm -rf "$APPDATA/MyDegreePlan"' } }).code, 2)
+  assert.equal(hook({ tool_name: 'Read', tool_input: { command: del } }).code, 0)
+})

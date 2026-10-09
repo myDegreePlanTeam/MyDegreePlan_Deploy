@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # finish_pr.sh: wait for CI, merge a PR, bring local main up to date and delete the PR's local branch, safely.
 #
-#   bash local-deploy/tools/finish_pr.sh REPO PR [--method squash|merge|rebase] [--wait SECONDS] [--delete-remote] [--dry-run]
+#   bash local-deploy/tools/finish_pr.sh REPO [PR] [--method squash|merge|rebase] [--wait SECONDS] [--delete-remote] [--dry-run]
 #
+#   PR    the pull request number (the one open_pr.sh printed). Left out, it is the PR of the branch REPO is on. A number
+#         guessed from memory once acted on an unrelated, already merged PR (retro 2026-10-09), so when the number is given and
+#         REPO is on another branch than that PR's, the script says so.
 #   REPO  the folder under MDP/ (MyDegreePlan_Frontend, MyDegreePlan_Prototype, local-deploy); its GitHub name is read
 #         from that folder's origin. Run it from MDP/ (the paths below), or from anywhere with the full path.
 #
@@ -24,7 +27,7 @@
 # Needs: git, gh (logged in). MDP_ROOT overrides the workspace root (the tests use it).
 set -u
 
-usage() { echo "usage: bash local-deploy/tools/finish_pr.sh REPO PR [--method squash|merge|rebase] [--wait SECONDS] [--delete-remote] [--dry-run]" >&2; exit 64; }
+usage() { echo "usage: bash local-deploy/tools/finish_pr.sh REPO [PR] [--method squash|merge|rebase] [--wait SECONDS] [--delete-remote] [--dry-run]" >&2; exit 64; }
 
 REPO=""; PR=""; METHOD=squash; WAIT=600; DELETE_REMOTE=0; DRY=0
 while [ $# -gt 0 ]; do
@@ -38,9 +41,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$REPO" ] && [ -n "$PR" ] || usage
+[ -n "$REPO" ] || usage
 case "$METHOD" in squash|merge|rebase) ;; *) usage ;; esac
-case "$PR" in ''|*[!0-9]*) usage ;; esac
+case "$PR" in *[!0-9]*) usage ;; esac
 case "$WAIT" in ''|*[!0-9]*) usage ;; esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,12 +60,26 @@ run() { if [ "$DRY" = 1 ]; then say "(dry run) $*"; else "$@"; fi; }
 SLUG="$(cd "$DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
 [ -n "$SLUG" ] || refuse "could not read the GitHub repo of $DIR (gh logged in? origin set?)"
 
+PR_GIVEN=1
+if [ -z "$PR" ]; then
+  PR_GIVEN=0
+  CURB="$(git -C "$DIR" branch --show-current 2>/dev/null)"
+  { [ -n "$CURB" ] && [ "$CURB" != main ]; } || refuse "no PR number given, and $REPO is on ${CURB:-a detached HEAD}, not on a PR branch"
+  PR="$(cd "$DIR" && gh pr list --repo "$SLUG" --head "$CURB" --state all --limit 1 --json number -q '.[0].number' 2>/dev/null)"
+  [ -n "$PR" ] || refuse "no PR number given, and no pull request has the head branch $CURB"
+  echo "(no PR number given: using #$PR, the pull request of the current branch $CURB)"
+fi
+
 step "1. PR #$PR in $SLUG"
 read -r STATE BRANCH HEAD BASE MERGEABLE DRAFT <<<"$(cd "$DIR" && gh pr view "$PR" --repo "$SLUG" \
   --json state,headRefName,headRefOid,baseRefName,mergeable,isDraft \
   -q '[.state, .headRefName, .headRefOid, .baseRefName, .mergeable, .isDraft] | join(" ")' 2>/dev/null)"
 [ -n "${STATE:-}" ] || refuse "could not read PR #$PR"
 say "$STATE: $BRANCH -> $BASE (head ${HEAD:0:7})"
+if [ "$PR_GIVEN" = 1 ]; then
+  ONB="$(git -C "$DIR" branch --show-current 2>/dev/null)"
+  [ "$ONB" = "$BRANCH" ] || say "note: $REPO is on '${ONB:-a detached HEAD}', not on this PR's branch $BRANCH; check that #$PR is the number open_pr.sh printed"
+fi
 
 MERGED_ALREADY=0
 case "$STATE" in

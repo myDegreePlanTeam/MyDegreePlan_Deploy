@@ -36,6 +36,11 @@
 //      does its own `cd`, `git -C` or `--prefix` is left alone, and a path that exists nowhere (a file the command is about to
 //      create) is never flagged.
 //
+//   6. A delete (rm, rmdir, del, Remove-Item, rimraf, fs.rmSync, find -delete ...) in a command that also names the live
+//      Windows-app profile %APPDATA%\MyDegreePlan (retro 2026-10-09: a cleanup deleted files of the user's running app's data).
+//      Also wired for the PowerShell tool, where only this check runs. `# guard_bash: allow` does not lift it; a delete the
+//      user asked for carries `# guard: delete-live-profile`. See liveProfileProblems().
+//
 // Limits: it is a line scanner, not a shell parser. Quotes are tracked only well enough to ignore `<<EOF` text inside
 // a quoted string. It aims for no false blocks on commands written the usual way, and says why when it blocks.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -52,7 +57,27 @@ const PROMPT_FLAGS = '(?:\\s+-(?:u|B|O|OO|q|i|I|E|s|S|d|[23](?:\\.\\d+)?))*'
 // a comment that opts a deliberate command out of every check (e.g. reproducing a hang under `timeout`)
 const ALLOW_MARKER = /#\s*guard_bash:\s*allow\b/
 
+// ---- 6. deleting the live Windows-app profile -------------------------------------------------------------------------------
+// The installed desktop app keeps the student's plan in %APPDATA%\MyDegreePlan (IndexedDB and Local Storage). On 2026-10-09 a
+// cleanup line after a smoke run that hit the single-instance lock deleted the unlocked files of that LIVE profile (retro
+// 2026-10-09). Tests use `--user-data-dir=<temp>` and delete only that folder. This refuses a delete whose command also names the
+// live folder, in Bash and PowerShell alike. It reads text, so a path hidden in a variable defined elsewhere is not seen: the
+// rule in the Desktop README and the memory note still apply. The generic allow marker does NOT lift it; a deliberate delete
+// (the user asked for it) carries `# guard: delete-live-profile`.
+const LIVE_PROFILE = /(?:%appdata%|\$env:appdata|\$\{?appdata\}?|appdata[\\/]+roaming)[\\/]+mydegreeplan(?![\w-])/i
+const DELETE_VERB = /(?:^|[\s;&|(`'"])(?:rm|rmdir|rd|del|erase|ri|remove-item|rimraf|unlink)(?=[\s;&|)`'"]|$)|-delete\b|\brmsync\b|\brmtree\b|\bremove-item\b|\.rm\(|\.rmdir\(|\.unlink\(/i
+const LIVE_PROFILE_MARKER = /#\s*guard:\s*delete-live-profile\b/
+
+export function liveProfileProblems(command) {
+  const text = String(command ?? '')
+  if (LIVE_PROFILE_MARKER.test(text)) return []
+  if (!LIVE_PROFILE.test(text) || !DELETE_VERB.test(text)) return []
+  return ['this command deletes, and names, the live Windows-app profile (%APPDATA%\\MyDegreePlan): that folder holds a real plan. Run tests with --user-data-dir=<a new temp folder> and delete only that folder. If the user asked for this delete, add `# guard: delete-live-profile` to the command']
+}
+
 export function inspect(command, opts = {}) {
+  const live = liveProfileProblems(command)
+  if (live.length) return live
   if (ALLOW_MARKER.test(String(command ?? ''))) return []
   const lines = String(command ?? '').replace(/\r\n/g, '\n').split('\n')
   const problems = []
@@ -199,11 +224,15 @@ function inQuote(prefix) {
 function main() {
   let payload
   try { payload = JSON.parse(readFileSync(0, 'utf8')) } catch { return 0 }
-  if (payload?.tool_name !== 'Bash') return 0
+  const tool = payload?.tool_name
+  if (tool !== 'Bash' && tool !== 'PowerShell') return 0
   const command = payload?.tool_input?.command
   if (typeof command !== 'string' || !command.trim()) return 0
   let problems
-  try { problems = inspect(command, { cwd: typeof payload?.cwd === 'string' ? payload.cwd : undefined }) } catch { return 0 }
+  try {
+    // PowerShell is not bash: the heredoc, interpreter and path checks do not apply, only the live-profile one does
+    problems = tool === 'PowerShell' ? liveProfileProblems(command) : inspect(command, { cwd: typeof payload?.cwd === 'string' ? payload.cwd : undefined })
+  } catch { return 0 }
   if (!problems.length) return 0
   console.error(`guard_bash: blocked before running:\n  - ${problems.join('\n  - ')}\nFix the command and run it again. (A deliberate one can carry \`# guard_bash: allow\`.)`)
   return 2
