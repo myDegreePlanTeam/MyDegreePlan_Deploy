@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS concentrations (
 -- A row here is a degree PROGRAM: a major (a degree on its own) or a concentration of one. The table kept its
 -- original name so student_profiles.concentration_id and every stored plan stay valid; the app says "program".
 -- Their own statements so a database whose table already exists gains the columns too.
---   kind               'major' | 'concentration'
+--   kind               'major' | 'concentration' | 'minor'
 --   degree             e.g. 'B.S.'
 --   major_name         what the picker groups programs under (a concentration shares its major's name)
 --   department         owning department code
@@ -79,7 +79,7 @@ ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS major_code        TEXT;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS is_base           BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE concentrations ADD COLUMN IF NOT EXISTS aliases           TEXT;
 ALTER TABLE concentrations DROP CONSTRAINT IF EXISTS concentrations_kind_check;
-ALTER TABLE concentrations ADD CONSTRAINT concentrations_kind_check CHECK (kind IN ('major','concentration'));
+ALTER TABLE concentrations ADD CONSTRAINT concentrations_kind_check CHECK (kind IN ('major','concentration','minor'));
 
 -- One row per program per catalog year: the index of which degree plan exists. A student's plan is the one for
 -- their catalog year (or the latest earlier one); covers_earlier marks a program's first plan as also serving
