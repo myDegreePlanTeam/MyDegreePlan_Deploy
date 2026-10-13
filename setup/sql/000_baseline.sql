@@ -229,8 +229,28 @@ ALTER TABLE prior_credits ADD CONSTRAINT prior_credits_credit_type_check
   CHECK (credit_type IN ('act_placement','ap_credit','transfer_credit','test_out',
                          'ib_credit','act_credit','cambridge'));
 
+-- student_programs: the programs a student has added to the one in student_profiles.concentration_id (the primary):
+-- a second major or a minor (PLAN_double-major-minor.md, D1). The primary stays on the profile, so a student with no
+-- added program has no row here and every reader that ignores this table keeps working. The slots of an added program
+-- go into student_plan_slots like any other. catalog_year is the plan year the program's slots belong to (resolved when
+-- it is added, never recomputed); entry_season / entry_year is the term the student declared it.
+CREATE TABLE IF NOT EXISTS student_programs (
+  id               INTEGER     GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  student_id       INTEGER     NOT NULL REFERENCES student_profiles(id) ON DELETE CASCADE,
+  concentration_id INTEGER     NOT NULL REFERENCES concentrations(id),
+  role             TEXT        NOT NULL DEFAULT 'major' CHECK (role IN ('major','minor')),
+  catalog_year     TEXT        NOT NULL,
+  gened_program    TEXT        NOT NULL DEFAULT 'legacy',
+  entry_season     TEXT        CHECK (entry_season IN ('Fall','Spring','Summer')),
+  entry_year       INTEGER,
+  position         INTEGER     NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (student_id, concentration_id)
+);
+
 -- Foreign-key columns the RLS policies and the app filter on constantly.
 CREATE INDEX IF NOT EXISTS idx_plan_slots_student   ON student_plan_slots(student_id);
+CREATE INDEX IF NOT EXISTS idx_programs_student     ON student_programs(student_id);
 CREATE INDEX IF NOT EXISTS idx_notes_student        ON student_semester_notes(student_id);
 CREATE INDEX IF NOT EXISTS idx_free_add_student     ON student_free_add_slots(student_id);
 CREATE INDEX IF NOT EXISTS idx_prior_credits_plan   ON prior_credits(plan_id);
@@ -263,7 +283,8 @@ BEGIN
       ('student_plan_slots',     'student_id IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())'),
       ('student_semester_notes', 'student_id IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())'),
       ('student_free_add_slots', 'student_id IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())'),
-      ('prior_credits',          'plan_id    IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())')
+      ('student_programs',       'student_id IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())'),
+      ('prior_credits',         'plan_id    IN (SELECT id FROM student_profiles WHERE user_id = auth.uid())')
     ) AS v(t, own)
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -297,7 +318,7 @@ GRANT SELECT ON courses, concentrations, degree_plans, requirement_slots, prereq
 
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON student_profiles, student_plan_slots, student_semester_notes,
-     student_free_add_slots, prior_credits                          TO authenticated;
+     student_free_add_slots, student_programs, prior_credits        TO authenticated;
 
 GRANT ALL ON ALL TABLES    IN SCHEMA public TO service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
