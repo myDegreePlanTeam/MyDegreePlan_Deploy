@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backslashProblems, inspect, liveProfileProblems } from './guard_bash.mjs'
+import { MAX_COMMAND_BYTES, backslashProblems, inspect, lengthProblems, liveProfileProblems } from './guard_bash.mjs'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'guard_bash.mjs')
 const lines = (...l) => l.join('\n')
@@ -222,6 +222,124 @@ test('hook protocol: a hang and a doubled backslash are both reported', () => {
 test('hook protocol: the allow marker lets a deliberate doubled backslash through', () => {
   const r = hook({ tool_name: 'Bash', tool_input: { command: lines('# guard_bash: allow', "python3 - <<'EOF'", `x = '${DOUBLE}n'`, 'EOF') } })
   assert.deepEqual([r.code, r.out, r.err], [0, '', ''])
+})
+
+// ---- 4b. a doubled backslash in a heredoc that writes a source file ---------------------------------------------------------
+test('blocks the exact incident: a test appended with cat whose RegExp template holds doubled backslashes', () => {
+  // retro 2026-10-13: the pattern reached the file with one backslash each, held a backspace, and the test checked nothing
+  noted(lines(
+    "cd /w && cat >> src/tests/dialog.test.jsx <<'EOF'",
+    '  expect(old, cls).not.toMatch(new RegExp(`^' + DOUBLE + '.${cls}' + DOUBLE + 'b`, \'m\'))',
+    'EOF',
+    'npx vitest run src/tests/dialog.test.jsx',
+  ), /heredoc that writes src\/tests\/dialog\.test\.jsx.*reaches the file as ONE/)
+})
+
+test('blocks any doubled backslash written to a source file, whatever follows it', () => {
+  for (const ch of ['.', '(', '[', '/', 'd', 'n', 'b', "'", DOUBLE.slice(1)]) noted(lines("cat > x.mjs <<'EOF'", `const a = '${DOUBLE}${ch}'`, 'EOF'), /writes x\.mjs/)
+})
+
+test('reads every kind of source file, and every way of writing one', () => {
+  for (const file of ['a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'a.ts', 'a.tsx', 'a.py', 'src/lib/a.js', '"$S/a.mjs"']) {
+    noted(lines(`cat > ${file} <<'EOF'`, `x = '${DOUBLE}d'`, 'EOF'), /heredoc that writes/)
+  }
+  noted(lines("cat >> a.py <<'EOF'", `x = '${DOUBLE}d'`, 'EOF'))                      // appending
+  noted(lines("cat <<'EOF' > a.js", `x = '${DOUBLE}d'`, 'EOF'))                       // the redirect after the heredoc
+  noted(lines("tee a.mjs <<'EOF'", `x = '${DOUBLE}d'`, 'EOF'))
+  noted(lines("tee -a a.mjs <<'EOF' >/dev/null", `x = '${DOUBLE}d'`, 'EOF'))
+  noted(lines('cat > a.js <<EOF', `x = '${DOUBLE}d'`, 'EOF'))                         // an unquoted heredoc loses it too
+  noted(lines('cat > a.js <<-EOF', `\tx = '${DOUBLE}d'`, '\tEOF'))
+})
+
+test('leaves alone a file that is not source, a single backslash, and a pair outside the body', () => {
+  for (const file of ['a.md', 'a.txt', 'a.json', 'a.css', 'a.sh', 'a.yml', 'notes']) quiet(lines(`cat > ${file} <<'EOF'`, `C:${DOUBLE}Users${DOUBLE}x`, 'EOF'))
+  quiet(lines("cat > a.js <<'EOF'", `const re = /${BS}d+${BS}./`, `const s = 'a${BS}nb'`, 'EOF'))
+  quiet(lines("cat > a.js <<'EOF'", 'const a = 1', 'EOF', `echo "C:${DOUBLE}Users"`))   // after the heredoc closed
+  quiet(lines(`echo "cat > a.js <<EOF ${DOUBLE}d"`))                                    // the opener is text in a string
+})
+
+test('says how to fix a written file (the Write or Edit tool), not chr(92)', () => {
+  const p = backslashProblems(lines("cat > a.test.js <<'EOF'", `const re = new RegExp('${DOUBLE}d')`, 'EOF'))
+  assert.equal(p.length, 1)
+  assert.match(p[0], /Write tool/)
+  assert.match(p[0], /Edit tool/)
+  assert.ok(!p[0].includes('fromCharCode'))
+})
+
+test('a python heredoc fed to the interpreter keeps its own, narrower rule', () => {
+  quiet(lines("python3 - <<'EOF'", `x = r'a${DOUBLE}.b'`, 'EOF'))            // python keeps this backslash: still allowed
+  noted(lines("cat > a.py <<'EOF'", `x = r'a${DOUBLE}.b'`, 'EOF'))           // written to a file it is one backslash: blocked
+})
+
+test('the allow marker lets a deliberate one through, and the hook exits 2 without it', () => {
+  const command = lines("cat > a.mjs <<'EOF'", `const p = 'C:${DOUBLE}Users'`, 'EOF')
+  quiet(lines('# guard_bash: allow', command))
+  const r = hook({ tool_name: 'Bash', tool_input: { command } })
+  assert.equal(r.code, 2)
+  assert.match(r.err, /reaches the file as ONE/)
+})
+
+// ---- 7. a command too long for the shell to receive whole --------------------------------------------------------------------
+// The shell here fails on a command of about 7,500 characters or more ("unexpected EOF while looking for matching" a quote):
+// 15 of 15 in the transcripts, and none shorter. It was blamed on apostrophes four times; it is the length.
+const heredocOf = bytes => {
+  const head = "cat > /tmp/long.txt <<'EOF'\n"
+  const tail = '\nEOF'
+  return head + 'x'.repeat(bytes - Buffer.byteLength(head + tail)) + tail
+}
+
+test('blocks a command at the limit and lets one a byte under it through', () => {
+  assert.equal(Buffer.byteLength(heredocOf(MAX_COMMAND_BYTES)), MAX_COMMAND_BYTES)
+  blocked(heredocOf(MAX_COMMAND_BYTES), /7,000 bytes.*it is the length, not the apostrophes/)
+  allowed(heredocOf(MAX_COMMAND_BYTES - 1))
+  assert.equal(MAX_COMMAND_BYTES, 7000)
+})
+
+test('the limit is below every command that failed and above the ones that ran, bar the closest', () => {
+  // from the transcripts up to 2026-10-13: the shortest that failed, and the lengths of the longest that ran
+  for (const failed of [7572, 7781, 7820, 7983, 8476, 9154, 9884, 21496]) blocked(heredocOf(failed), /bytes/)
+  for (const ran of [6232, 6501, 6641, 6767]) allowed(heredocOf(ran))
+  blocked(heredocOf(7485))   // it ran, 86 characters under the shortest failure: the margin costs this one
+})
+
+test('counts bytes, not characters: a body of accented text reaches the limit sooner', () => {
+  const body = 'é'.repeat(3600)   // 3,600 characters, 7,200 bytes
+  blocked(lines("cat > /tmp/a.txt <<'EOF'", body, 'EOF'), /bytes/)
+  allowed(lines("cat > /tmp/a.txt <<'EOF'", 'e'.repeat(3600), 'EOF'))
+})
+
+test('an apostrophe in a long heredoc is not the problem: a long body with many is fine under the limit', () => {
+  const body = Array.from({ length: 60 }, (_, i) => `line ${i}: the student's plan, the major's concentrations, \`code\` and "quotes"`).join('\n')
+  const command = lines("python3 - <<'PYEOF'", `text = """${body}"""`, 'print(len(text))', 'PYEOF')
+  assert.ok(Buffer.byteLength(command) < MAX_COMMAND_BYTES && command.split('\n').length > 60)
+  allowed(command)
+})
+
+test('says only the length when a command is too long, and what to do', () => {
+  const p = inspect(lines("python3 - <<'EOF'", 'EOF', 'x'.repeat(MAX_COMMAND_BYTES)))   // also an empty heredoc
+  assert.equal(p.length, 1)
+  assert.match(p[0], /Write tool/)
+  assert.match(p[0], /split the command/)
+  assert.deepEqual(lengthProblems('git status'), [])
+  assert.deepEqual(lengthProblems(undefined), [])
+})
+
+test('the generic allow marker does not lift the length block: it was in the long command that failed', () => {
+  // retro 2026-10-13: a 9,884-character command carried `# guard_bash: allow` in its python heredoc, for another reason, and failed
+  const command = lines("cd /w && python - <<'PYEOF'", '# guard_bash: allow', `text = """${'x'.repeat(9700)}"""`, 'PYEOF')
+  blocked(command, /does not lift this/)
+  blocked(`# guard_bash: allow\n${heredocOf(7300)}`, /bytes/)
+})
+
+test('its own marker lifts the length block, and the hook exits 2 without it', () => {
+  const command = heredocOf(7300)
+  allowed(`# guard: long-command\n${command}`)
+  assert.deepEqual(lengthProblems(`${command}\n# guard: long-command`), [])
+  const r = hook({ tool_name: 'Bash', tool_input: { command } })
+  assert.equal(r.code, 2)
+  assert.match(r.err, /guard_bash: blocked before running/)
+  assert.match(r.err, /7,300 bytes/)
+  assert.equal(hook({ tool_name: 'PowerShell', tool_input: { command } }).code, 0)   // PowerShell is not bash: only the live-profile check runs there
 })
 
 // ---- 5. relative paths that belong to another directory ----------------------------------------------------------------------

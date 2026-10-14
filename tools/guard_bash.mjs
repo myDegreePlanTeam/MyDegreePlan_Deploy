@@ -28,6 +28,10 @@
 //      backslash). The hook sees the text as typed, before that happens, so it can refuse in time. See backslashProblems().
 //      This used to be advice only; it blocks since 2026-10-05. Put the script in a file with the Write tool and run it, or
 //      build the backslash with chr(92) / String.fromCharCode(92).
+//   4b. The same pair in a heredoc that WRITES a source file (`cat > x.test.jsx <<'EOF'`, `cat >> x.py <<'EOF'`, `tee x.mjs <<'EOF'`;
+//      .js .jsx .mjs .cjs .ts .tsx .py). The file gets one backslash where two were typed (retro 2026-10-13: a test's
+//      `new RegExp` template lost its escapes, held a backspace, and passed without checking anything; only the pre-commit
+//      lint stopped it). Here any doubled backslash counts, not only the escape pairs: in a file nothing keeps the second one.
 //
 //   5. A relative path that does not exist in the shell's working directory but does exist under the workspace root or one of
 //      the repo folders (retro 2026-10-02, 2026-10-03 and 2026-10-05: the Bash tool keeps the directory of an earlier `cd`, so
@@ -40,6 +44,15 @@
 //      Windows-app profile %APPDATA%\MyDegreePlan (retro 2026-10-09: a cleanup deleted files of the user's running app's data).
 //      Also wired for the PowerShell tool, where only this check runs. `# guard_bash: allow` does not lift it; a delete the
 //      user asked for carries `# guard: delete-live-profile`. See liveProfileProblems().
+//
+//   7. A command of MAX_COMMAND_BYTES (7,000) or more. On this machine the shell does not get a long command whole: of the
+//      4,953 Bash commands in the transcripts up to 2026-10-13, all 15 of 7,572 characters or more failed with "unexpected EOF
+//      while looking for matching" a quote, and none of the 4,938 shorter ones did for that reason (the longest that ran was
+//      7,485). Every one was a long heredoc, so it was blamed on apostrophes and backticks in the body four times (retros
+//      2026-10-03, 10-05, 10-08, 10-13) and two CLAUDE.md lines about quoting did not stop it: 227 heredocs of 40 lines or more
+//      with apostrophes ran fine. The cause is length. The limit sits between 7,486 and 7,571 characters and may move with the
+//      session's wrapper, so the block leaves a margin. Write the file or the script with the Write tool and run it.
+//      `# guard_bash: allow` does not lift it; `# guard: long-command` does. See lengthProblems().
 //
 // Limits: it is a line scanner, not a shell parser. Quotes are tracked only well enough to ignore `<<EOF` text inside
 // a quoted string. It aims for no false blocks on commands written the usual way, and says why when it blocks.
@@ -75,9 +88,30 @@ export function liveProfileProblems(command) {
   return ['this command deletes, and names, the live Windows-app profile (%APPDATA%\\MyDegreePlan): that folder holds a real plan. Run tests with --user-data-dir=<a new temp folder> and delete only that folder. If the user asked for this delete, add `# guard: delete-live-profile` to the command']
 }
 
+// ---- 7. a command too long for the shell to receive whole ------------------------------------------------------------------
+// Measured in UTF-8 bytes (never fewer than the characters). 7,000 leaves a margin under the observed break (the longest command
+// that ran was 7,485 characters, the shortest that failed 7,572): replayed over the 4,953 historical commands it blocks all 15
+// that failed and one that ran (7,485 characters). The generic allow marker does NOT lift it: that marker is often already in a
+// long python heredoc for another reason (it was in the 9,884-character command that failed on 2026-10-13), and over the limit a
+// command cannot work whatever it carries. A command in the margin, or on a machine whose limit is higher, carries
+// `# guard: long-command`.
+export const MAX_COMMAND_BYTES = 7000
+const LONG_COMMAND_MARKER = /#\s*guard:\s*long-command\b/
+
+export function lengthProblems(command) {
+  const text = String(command ?? '')
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes < MAX_COMMAND_BYTES || LONG_COMMAND_MARKER.test(text)) return []
+  return [`this command is ${bytes.toLocaleString('en-US')} bytes, and the shell here does not receive a command of about 7,500 or more whole: it fails with "unexpected EOF while looking for matching" a quote, whatever the heredoc holds (15 of 15 in the transcripts; it is the length, not the apostrophes). Write the file or the script with the Write tool and run it, or split the command. \`# guard_bash: allow\` does not lift this; a command known to fit carries \`# guard: long-command\``]
+}
+
 export function inspect(command, opts = {}) {
   const live = liveProfileProblems(command)
   if (live.length) return live
+  // a command the shell will not receive whole fails whatever else is in it, so this is the only thing said about it,
+  // and it is checked before the generic allow marker
+  const tooLong = lengthProblems(command)
+  if (tooLong.length) return tooLong
   if (ALLOW_MARKER.test(String(command ?? ''))) return []
   const lines = String(command ?? '').replace(/\r\n/g, '\n').split('\n')
   const problems = []
@@ -135,35 +169,51 @@ const PY_ESCAPE_PAIR = /\\\\[nrtbfv0-7xuUN'"]/
 const NODE_ESCAPE_PAIR = /\\\\[A-Za-z0-9'"`]/
 const SCRIPT_OPENER = /(?:^|[\s;&|(])(python3?|py|node)\b[^\n]*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/
 const INLINE_SCRIPT = /(?:^|[\s;&|(])(python3?|py|node)\s+(?:-[A-Za-z]+\s+)*-[ce]\b/
+// 4b. a heredoc whose body is written to a source file: `cat > x.jsx <<'EOF'`, `cat >> x.py <<'EOF'`, `tee -a x.mjs <<'EOF'`,
+// with the redirect before or after the `<<`. Group 1 or 2 is the file.
+const SOURCE_FILE = String.raw`["']?([^\s"'<>|;&]+\.(?:jsx?|mjs|cjs|tsx?|py))(?![\w.-])["']?`   // not a.json, a.js.map, a.pyc
+const FILE_WRITER = new RegExp(String.raw`(?:>>?\s*${SOURCE_FILE}|(?:^|[\s;&|(])tee\s+(?:-[A-Za-z]+\s+)*${SOURCE_FILE})`)
+const HEREDOC_OPENER = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/
+const ANY_PAIR = /\\\\\S/
 
-// the python/node source in a command: heredoc bodies fed to an interpreter, and everything from a `-c` / `-e` onward
+// the python/node source in a command: heredoc bodies fed to an interpreter, everything from a `-c` / `-e` onward, and
+// heredoc bodies written to a source file (`file` is set on those)
 function scriptsIn(command) {
   const lines = String(command ?? '').replace(/\r\n/g, '\n').split('\n')
   const found = []
-  let open = null // {lang, tag, dash, body: []}
+  let open = null // {lang, tag, dash, file, body: []}
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (open) {
       const text = open.dash ? line.replace(/^\t+/, '') : line
-      if (text === open.tag) { found.push({ lang: open.lang, text: open.body.join('\n') }); open = null } else open.body.push(line)
+      if (text === open.tag) { found.push({ lang: open.lang, file: open.file, text: open.body.join('\n') }); open = null } else open.body.push(line)
       continue
     }
     const inline = line.match(INLINE_SCRIPT)
     if (inline) found.push({ lang: inline[1] === 'node' ? 'node' : 'python', text: lines.slice(i).join('\n') })
     const m = line.match(SCRIPT_OPENER)
-    if (m && !inQuote(line.slice(0, m.index))) open = { lang: m[1] === 'node' ? 'node' : 'python', tag: m[3], dash: /<<-/.test(line), body: [] }
+    if (m && !inQuote(line.slice(0, m.index))) { open = { lang: m[1] === 'node' ? 'node' : 'python', tag: m[3], dash: /<<-/.test(line), body: [] }; continue }
+    const here = line.match(HEREDOC_OPENER)
+    const writer = here && !inQuote(line.slice(0, here.index)) ? line.match(FILE_WRITER) : null
+    if (writer) {
+      const file = writer[1] ?? writer[2]
+      open = { lang: /\.py$/.test(file) ? 'python' : 'node', tag: here[3], dash: here[1] === '-', file, body: [] }
+    }
   }
-  if (open) found.push({ lang: open.lang, text: open.body.join('\n') })
+  if (open) found.push({ lang: open.lang, file: open.file, text: open.body.join('\n') })
   return found
 }
 
 export function backslashProblems(command) {
   const found = []
-  for (const { lang, text } of scriptsIn(command)) {
-    const m = text.match(lang === 'node' ? NODE_ESCAPE_PAIR : PY_ESCAPE_PAIR)
+  for (const { lang, file, text } of scriptsIn(command)) {
+    // in a file nothing keeps the second backslash, so any pair is changed; in a script only the pairs that make another escape matter
+    const m = text.match(file ? ANY_PAIR : lang === 'node' ? NODE_ESCAPE_PAIR : PY_ESCAPE_PAIR)
     if (!m) continue
     const at = text.slice(Math.max(0, m.index - 20), m.index + 24).replace(/\n/g, ' ')
-    found.push(`a doubled backslash in the ${lang} script (…${at}…) reaches the shell as ONE, so that escape means something else: put the script in a file with the Write tool and run it, or build the backslash with ${lang === 'node' ? 'String.fromCharCode(92)' : 'chr(92)'}`)
+    found.push(file
+      ? `a doubled backslash in the heredoc that writes ${file} (…${at}…) reaches the file as ONE, so the source says something else than was typed (a regular expression loses its escape): write the file with the Write tool, or change it with the Edit tool`
+      : `a doubled backslash in the ${lang} script (…${at}…) reaches the shell as ONE, so that escape means something else: put the script in a file with the Write tool and run it, or build the backslash with ${lang === 'node' ? 'String.fromCharCode(92)' : 'chr(92)'}`)
   }
   return found.slice(0, 3)
 }
